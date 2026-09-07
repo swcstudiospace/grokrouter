@@ -1,6 +1,12 @@
 # GrokRouter 0.1.0-beta.46
 
-Installs on rotating Grok Bot 0.30.0 host builds without a per-hash approval.
+Installs on rotating Grok Bot 0.30.0 host builds without a per-hash approval, and adds two providers plus the full OpenRouter catalog.
+
+- **Every OpenRouter model, including the free ones.** `/models free` lists the free models from OpenRouter's live public catalog, `/models all` pages through all of them, and `/models search <text>` filters by vendor or name. `/model <vendor/model>` accepts any ID and warns when the model is unlisted or lacks native tool calling. `/model free` selects OpenRouter's rotating free router. The catalog is cached for an hour inside the Bot computer and never blocks a switch.
+- **Anthropic provider.** `/provider anthropic` routes a Bot through the Claude Agent SDK, which is the only third-party path Anthropic permits for Claude subscriptions. **Start Anthropic Sign-in** runs the SDK's own `claude auth login` in the Bot terminal; GrokRouter never handles a claude.ai token. Grok tools use the same structured adapter as Codex.
+- **xAI provider.** `/provider xai` routes a Bot through a SuperGrok or X Premium+ subscription using xAI's public device-code sign-in. **Start xAI Sign-in** prints a link and code; tokens are stored owner-only, refreshed automatically, and only ever sent to xAI hosts.
+- The installers, `remote/install.sh`, and `grokbot-router` accept `anthropic` and `xai` alongside `codex` and `openrouter`. OpenRouter/xAI-only setups still need no dependency download; Codex or Anthropic installs the pinned SDKs.
+- These provider rows are automated-pass, live-pending in `docs/TEST-MATRIX.md` until a fresh-Bot acceptance run records them.
 
 - Public issues #1 through #5 all failed the same way: a genuine stock Bot-computer host whose SHA-256 was not yet on the signed list. At least seven distinct 0.30.0 host hashes were reported in one day, so an exact allowlist cannot keep up.
 - The host adapter now has a second acceptance tier, **structural verification**: the host carries no GrokRouter, legacy, or other-router marker; every required source anchor appears exactly once; a read-only patch passes `node --check`; and the byte count is within the manifest's band (20–40 MB). The exact signed list still runs first. Both tiers back up the untouched host before patching, and the backup now follows the live stock variant so Restore returns exactly what was running.

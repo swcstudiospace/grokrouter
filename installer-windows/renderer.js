@@ -1,9 +1,13 @@
 const elements = {
   codex: document.querySelector("#codexEnabled"),
   openRouter: document.querySelector("#openRouterEnabled"),
+  anthropic: document.querySelector("#anthropicEnabled"),
+  xai: document.querySelector("#xaiEnabled"),
   defaultProvider: document.querySelector("#defaultProvider"),
   codexModel: document.querySelector("#codexModel"),
   openRouterModel: document.querySelector("#openRouterModel"),
+  anthropicModel: document.querySelector("#anthropicModel"),
+  xaiModel: document.querySelector("#xaiModel"),
   openRouterKey: document.querySelector("#openRouterKey"),
   install: document.querySelector("#install"),
   status: document.querySelector("#status"),
@@ -23,13 +27,18 @@ function syncProviders() {
   elements.defaultProvider.replaceChildren();
   if (elements.codex.checked) elements.defaultProvider.add(new Option("Codex SDK", "codex"));
   if (elements.openRouter.checked) elements.defaultProvider.add(new Option("OpenRouter", "openrouter"));
+  if (elements.anthropic.checked) elements.defaultProvider.add(new Option("Anthropic", "anthropic"));
+  if (elements.xai.checked) elements.defaultProvider.add(new Option("xAI", "xai"));
   if ([...elements.defaultProvider.options].some((option) => option.value === previous)) {
     elements.defaultProvider.value = previous;
   }
   elements.codexModel.disabled = !elements.codex.checked || busy;
   elements.openRouterModel.disabled = !elements.openRouter.checked || busy;
   elements.openRouterKey.disabled = !elements.openRouter.checked || busy;
-  elements.install.disabled = busy || (!elements.codex.checked && !elements.openRouter.checked);
+  elements.anthropicModel.disabled = !elements.anthropic.checked || busy;
+  elements.xaiModel.disabled = !elements.xai.checked || busy;
+  const anyProvider = elements.codex.checked || elements.openRouter.checked || elements.anthropic.checked || elements.xai.checked;
+  elements.install.disabled = busy || !anyProvider;
 }
 
 function setBusy(value, status) {
@@ -38,6 +47,8 @@ function setBusy(value, status) {
   elements.spinner.classList.toggle("hidden", !value);
   elements.codex.disabled = value;
   elements.openRouter.disabled = value;
+  elements.anthropic.disabled = value;
+  elements.xai.disabled = value;
   elements.defaultProvider.disabled = value;
   buttons.forEach((button) => { button.disabled = value; });
   syncProviders();
@@ -74,18 +85,27 @@ async function run(action, payload = {}) {
 
 elements.codex.addEventListener("change", syncProviders);
 elements.openRouter.addEventListener("change", syncProviders);
+elements.anthropic.addEventListener("change", syncProviders);
+elements.xai.addEventListener("change", syncProviders);
 elements.install.addEventListener("click", () => {
   const key = elements.openRouterKey.value.trim();
   if (elements.openRouter.checked && key && !validOpenRouterKey(key)) {
     window.alert("That OpenRouter key does not look valid. Paste the complete key beginning with sk-or-v1-. Nothing has been saved or installed.");
     return;
   }
-  const providers = [elements.codex.checked && "codex", elements.openRouter.checked && "openrouter"].filter(Boolean);
+  const providers = [
+    elements.codex.checked && "codex",
+    elements.openRouter.checked && "openrouter",
+    elements.anthropic.checked && "anthropic",
+    elements.xai.checked && "xai",
+  ].filter(Boolean);
   const payload = {
     defaultProvider: elements.defaultProvider.value,
     providers,
     codexModel: elements.codexModel.value,
     openRouterModel: elements.openRouterModel.value,
+    anthropicModel: elements.anthropicModel.value,
+    xaiModel: elements.xaiModel.value,
     openRouterKey: key,
   };
   elements.openRouterKey.value = "";

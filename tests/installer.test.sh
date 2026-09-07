@@ -14,6 +14,8 @@ bash -n \
   "$PROJECT_ROOT/Install GrokRouter.command"
 python3 -m py_compile "$PROJECT_ROOT/patch/router_patch.py"
 node --check "$PROJECT_ROOT/runtime/run-provider.mjs"
+node --check "$PROJECT_ROOT/runtime/openrouter-catalog.mjs"
+node --check "$PROJECT_ROOT/runtime/xai-oauth.mjs"
 node --check "$PROJECT_ROOT/remote/verify-host-registry.mjs"
 node --check "$PROJECT_ROOT/scripts/sign-host-registry.mjs"
 node "$PROJECT_ROOT/remote/verify-host-registry.mjs" \
@@ -36,6 +38,20 @@ rm -f "$TAMPERED_REGISTRY"
 
 STRUCTURED_FAILURE="$(ROUTER_INSTALL_ATTEMPT=TEST1234 bash "$PROJECT_ROOT/remote/install.sh" --not-a-real-option 2>&1 || true)"
 grep -q 'GROKROUTER_TEST1234_INSTALL_FAILED_OPTIONS_UNKNOWN_OPTION' <<<"$STRUCTURED_FAILURE"
+PROVIDER_FAILURE="$(ROUTER_INSTALL_ATTEMPT=PROV1 bash "$PROJECT_ROOT/remote/install.sh" --provider gemini --no-restart 2>&1 || true)"
+grep -q 'GROKROUTER_PROV1_INSTALL_FAILED_OPTIONS_INVALID_PROVIDER' <<<"$PROVIDER_FAILURE"
+PROVIDERS_FAILURE="$(ROUTER_INSTALL_ATTEMPT=PROV2 bash "$PROJECT_ROOT/remote/install.sh" --providers codex,gemini --no-restart 2>&1 || true)"
+grep -q 'GROKROUTER_PROV2_INSTALL_FAILED_OPTIONS_INVALID_PROVIDERS' <<<"$PROVIDERS_FAILURE"
+XAI_MODEL_FAILURE="$(ROUTER_INSTALL_ATTEMPT=PROV3 bash "$PROJECT_ROOT/remote/install.sh" --xai-model 'grok 4' --no-restart 2>&1 || true)"
+grep -q 'GROKROUTER_PROV3_INSTALL_FAILED_OPTIONS_INVALID_XAI_MODEL' <<<"$XAI_MODEL_FAILURE"
+grep -q 'auth xai' "$PROJECT_ROOT/remote/grokbot-router"
+grep -q 'auth anthropic' "$PROJECT_ROOT/remote/grokbot-router"
+grep -q '"@anthropic-ai/claude-agent-sdk": "0.3.263"' "$PROJECT_ROOT/runtime/package.json"
+grep -q 'await import("@anthropic-ai/claude-agent-sdk")' "$PROJECT_ROOT/runtime/run-provider.mjs"
+grep -q 'Start Anthropic Sign-in' "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
+grep -q 'Start xAI Sign-in' "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
+grep -q -- '--anthropic-model' "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
+grep -q -- '--xai-model' "$PROJECT_ROOT/installer-windows/main.cjs"
 PREFLIGHT_FAILURE="$(PATH=/usr/bin:/bin:/sbin ROUTER_INSTALL_ATTEMPT=PREF123 bash "$PROJECT_ROOT/remote/install.sh" --no-restart 2>&1 || true)"
 grep -q 'GROKROUTER_PREF123_PHASE_PREFLIGHT' <<<"$PREFLIGHT_FAILURE"
 grep -q 'GROKROUTER_PREF123_INSTALL_FAILED_PREFLIGHT_MISSING_COMMAND' <<<"$PREFLIGHT_FAILURE"
@@ -173,8 +189,8 @@ grep -q 'GROKROUTER_%s_PHASE_%s' "$PROJECT_ROOT/remote/install.sh"
 grep -q 'GROKROUTER_%s_INSTALL_FAILED_%s_%s' "$PROJECT_ROOT/remote/install.sh"
 grep -q -- '--fetch-retries=3' "$PROJECT_ROOT/remote/install.sh"
 grep -q -- '--fetch-timeout=30000' "$PROJECT_ROOT/remote/install.sh"
-grep -q 'Reusing the already verified pinned Codex runtime' "$PROJECT_ROOT/remote/install.sh"
-grep -q 'OpenRouter-only setup needs no dependency download' "$PROJECT_ROOT/remote/install.sh"
+grep -q 'Reusing the already verified pinned Codex and Claude Agent SDK runtime' "$PROJECT_ROOT/remote/install.sh"
+grep -q 'OpenRouter/xAI-only setup needs no dependency download' "$PROJECT_ROOT/remote/install.sh"
 grep -q 'await import("@openai/codex-sdk")' "$PROJECT_ROOT/runtime/run-provider.mjs"
 grep -q '"X-Title": "GrokRouter"' "$PROJECT_ROOT/runtime/run-provider.mjs"
 ! grep -q 'Prompt Advisers\|promptadvisers.com' "$PROJECT_ROOT/runtime/run-provider.mjs"
@@ -289,6 +305,41 @@ python3 "$ANCHOR_RUNTIME/patch/router_patch.py" \
   >/dev/null
 cmp "$HOST_FIXTURE" "$ANCHOR_HOST"
 
+XAI_RUNTIME="$TEMPORARY/xai-runtime"
+XAI_HOST="$TEMPORARY/xai-host-main.cjs"
+XAI_BACKUP="$TEMPORARY/xai-backup/host-main.cjs.stock"
+cp "$HOST_FIXTURE" "$XAI_HOST"
+mkdir -p "$XAI_RUNTIME"
+ROUTER_PATCH_HOST="$XAI_HOST" \
+ROUTER_PATCH_BACKUP="$XAI_BACKUP" \
+ROUTER_ALLOW_UNKNOWN_HOST=1 \
+ROUTER_BIN_DIR="$TEMPORARY/xai-bin" \
+ROUTER_GROK_SKILLS_ROOT="$TEMPORARY/xai-grok-skills" \
+ROUTER_INSTALL_ATTEMPT=XAI1 \
+bash "$PAYLOAD/remote/install.sh" \
+  --install-root "$XAI_RUNTIME" \
+  --provider xai \
+  --providers xai,openrouter \
+  --xai-model grok-build-0.1 \
+  --no-restart \
+  >"$TEMPORARY/install-xai.log"
+grep -q 'OpenRouter/xAI-only setup needs no dependency download' "$TEMPORARY/install-xai.log"
+[[ ! -d "$XAI_RUNTIME/node_modules" ]]
+"$TEMPORARY/xai-bin/grokbot-router" status | grep -q 'Default provider: xai'
+"$TEMPORARY/xai-bin/grokbot-router" status | grep -q 'xAI model: grok-build-0.1'
+python3 - "$XAI_RUNTIME/provider.json" <<'PY'
+import json
+import sys
+
+config = json.load(open(sys.argv[1]))
+assert config["providers"] == ["xai", "openrouter"], config["providers"]
+assert config["anthropicModel"] == "claude-sonnet-4-6"
+assert "grok-4.6" in config["xaiModels"]
+assert config["xaiBaseUrl"] == "https://api.x.ai/v1"
+PY
+AUTH_STATUS="$(ROUTER_PATCH_HOST="$XAI_HOST" ROUTER_PATCH_BACKUP="$XAI_BACKUP" "$TEMPORARY/xai-bin/grokbot-router" doctor 2>&1 || true)"
+grep -q 'Credential: not signed in' <<<"$AUTH_STATUS"
+
 cp "$HOST_FIXTURE" "$TEST_HOST"
 mkdir -p "$TEST_RUNTIME"
 printf '%s\n' '{"provider":"openrouter","openRouterModels":["openai/gpt-5.2","legacy/removed-model"]}' > "$TEST_RUNTIME/provider.json"
@@ -374,7 +425,7 @@ bash "$PAYLOAD/remote/install.sh" \
   --providers codex,openrouter \
   --no-restart \
   >"$TEMPORARY/install-reuse.log"
-grep -q 'Reusing the already verified pinned Codex runtime' "$TEMPORARY/install-reuse.log"
+grep -q 'Reusing the already verified pinned Codex and Claude Agent SDK runtime' "$TEMPORARY/install-reuse.log"
 "$TEST_BIN/grokbot-router" status | grep -q 'Default provider: openrouter'
 "$TEST_BIN/grokbot-router" status | grep -q 'OpenRouter model: openai/gpt-5.6-luna'
 grep -q 'user-owned' "$TEST_GROK_SKILLS/reasoning/KEEP"

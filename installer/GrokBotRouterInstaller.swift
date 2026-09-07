@@ -174,12 +174,18 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
     private var window: NSWindow!
     private let codexCheckbox = NSButton(checkboxWithTitle: "Codex SDK", target: nil, action: nil)
     private let openRouterCheckbox = NSButton(checkboxWithTitle: "OpenRouter", target: nil, action: nil)
+    private let anthropicCheckbox = NSButton(checkboxWithTitle: "Anthropic", target: nil, action: nil)
+    private let xaiCheckbox = NSButton(checkboxWithTitle: "xAI", target: nil, action: nil)
     private let defaultProviderPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let codexModelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let openRouterModelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let anthropicModelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let xaiModelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let openRouterKeyField = NSSecureTextField()
     private let installButton = NSButton(title: "Install Router", target: nil, action: nil)
     private let authButton = NSButton(title: "Start Codex Sign-in", target: nil, action: nil)
+    private let anthropicAuthButton = NSButton(title: "Start Anthropic Sign-in", target: nil, action: nil)
+    private let xaiAuthButton = NSButton(title: "Start xAI Sign-in", target: nil, action: nil)
     private let doctorButton = NSButton(title: "Run Doctor", target: nil, action: nil)
     private let repairButton = NSButton(title: "Repair Router", target: nil, action: nil)
     private let uninstallButton = NSButton(title: "Restore Stock Grok Bot", target: nil, action: nil)
@@ -227,7 +233,7 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
         let title = NSTextField(labelWithString: "Bring your own model.")
         title.font = .systemFont(ofSize: 30, weight: .bold)
         title.textColor = .labelColor
-        let subtitle = NSTextField(wrappingLabelWithString: "Keep Grok Bot’s interface, computer, files and tools. Route each Bot through Codex or OpenRouter, then switch models from the normal chat composer.")
+        let subtitle = NSTextField(wrappingLabelWithString: "Keep Grok Bot’s interface, computer, files and tools. Route each Bot through Codex, OpenRouter, Anthropic, or xAI, then switch models from the normal chat composer.")
         subtitle.textColor = .secondaryLabelColor
         subtitle.font = .systemFont(ofSize: 14, weight: .regular)
         subtitle.maximumNumberOfLines = 3
@@ -242,12 +248,18 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
 
         codexCheckbox.state = .on
         openRouterCheckbox.state = .on
+        anthropicCheckbox.state = .on
+        xaiCheckbox.state = .on
         codexCheckbox.target = self
         openRouterCheckbox.target = self
+        anthropicCheckbox.target = self
+        xaiCheckbox.target = self
         codexCheckbox.action = #selector(providerSelectionChanged)
         openRouterCheckbox.action = #selector(providerSelectionChanged)
+        anthropicCheckbox.action = #selector(providerSelectionChanged)
+        xaiCheckbox.action = #selector(providerSelectionChanged)
 
-        defaultProviderPopup.addItems(withTitles: ["Codex SDK", "OpenRouter"])
+        defaultProviderPopup.addItems(withTitles: ["Codex SDK", "OpenRouter", "Anthropic", "xAI"])
         codexModelPopup.addItems(withTitles: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"])
         openRouterModelPopup.addItems(withTitles: [
             "anthropic/claude-sonnet-4.6",
@@ -257,16 +269,33 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
             "google/gemini-3.1-pro-preview",
             "google/gemini-3.1-flash-lite"
         ])
+        anthropicModelPopup.addItems(withTitles: [
+            "claude-sonnet-4-6",
+            "claude-opus-4-6",
+            "claude-haiku-4-5",
+            "claude-fable-5-1"
+        ])
+        xaiModelPopup.addItems(withTitles: [
+            "grok-4.6",
+            "grok-build-0.1",
+            "grok-4.3",
+            "grok-4.20-0309-reasoning",
+            "grok-4.20-0309-non-reasoning"
+        ])
         openRouterKeyField.placeholderString = "OpenRouter API key (stored only in Grok Bot Secrets)"
 
         codexCheckbox.font = .systemFont(ofSize: 14, weight: .medium)
         openRouterCheckbox.font = .systemFont(ofSize: 14, weight: .medium)
-        let providerRow = NSStackView(views: [codexCheckbox, openRouterCheckbox])
+        anthropicCheckbox.font = .systemFont(ofSize: 14, weight: .medium)
+        xaiCheckbox.font = .systemFont(ofSize: 14, weight: .medium)
+        let providerRow = NSStackView(views: [codexCheckbox, openRouterCheckbox, anthropicCheckbox, xaiCheckbox])
         providerRow.orientation = .horizontal
         providerRow.spacing = 28
         let defaultRow = formRow("Default provider", defaultProviderPopup)
         let codexRow = formRow("Codex model", codexModelPopup)
         let openRouterRow = formRow("OpenRouter model", openRouterModelPopup)
+        let anthropicRow = formRow("Anthropic model", anthropicModelPopup)
+        let xaiRow = formRow("xAI model", xaiModelPopup)
         let keyRow = formRow("OpenRouter key", openRouterKeyField)
 
         let modelSectionHeader = sectionHeader(
@@ -274,7 +303,7 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
             title: "Choose the models",
             detail: "New Bots start on the default. Each Bot can switch later."
         )
-        let modelStack = NSStackView(views: [modelSectionHeader, providerRow, defaultRow, codexRow, openRouterRow, keyRow])
+        let modelStack = NSStackView(views: [modelSectionHeader, providerRow, defaultRow, codexRow, openRouterRow, anthropicRow, xaiRow, keyRow])
         modelStack.orientation = .vertical
         modelStack.alignment = .leading
         modelStack.spacing = 12
@@ -295,6 +324,10 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
         installButton.action = #selector(startInstall)
         authButton.target = self
         authButton.action = #selector(startCodexAuth)
+        anthropicAuthButton.target = self
+        anthropicAuthButton.action = #selector(startAnthropicAuth)
+        xaiAuthButton.target = self
+        xaiAuthButton.action = #selector(startXaiAuth)
         doctorButton.target = self
         doctorButton.action = #selector(startDoctor)
         repairButton.target = self
@@ -308,11 +341,13 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
         supportButton.target = self
         supportButton.action = #selector(openSupportIssue)
         authButton.title = "Codex sign-in"
+        anthropicAuthButton.title = "Anthropic sign-in"
+        xaiAuthButton.title = "xAI sign-in"
         doctorButton.title = "Check health"
         repairButton.title = "Repair"
         uninstallButton.title = "Restore stock"
-        [authButton, doctorButton, repairButton, uninstallButton].forEach(styleUtilityButton)
-        let utilities = NSStackView(views: [authButton, doctorButton, repairButton, uninstallButton])
+        [authButton, anthropicAuthButton, xaiAuthButton, doctorButton, repairButton, uninstallButton].forEach(styleUtilityButton)
+        let utilities = NSStackView(views: [authButton, anthropicAuthButton, xaiAuthButton, doctorButton, repairButton, uninstallButton])
         utilities.orientation = .horizontal
         utilities.spacing = 8
         utilities.distribution = .fillEqually
@@ -447,17 +482,23 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
     @objc private func providerSelectionChanged() {
         let codex = codexCheckbox.state == .on
         let openRouter = openRouterCheckbox.state == .on
+        let anthropic = anthropicCheckbox.state == .on
+        let xai = xaiCheckbox.state == .on
         let previousSelection = defaultProviderPopup.titleOfSelectedItem
         codexModelPopup.isEnabled = codex
         openRouterModelPopup.isEnabled = openRouter
+        anthropicModelPopup.isEnabled = anthropic
+        xaiModelPopup.isEnabled = xai
         openRouterKeyField.isEnabled = openRouter
         defaultProviderPopup.removeAllItems()
         if codex { defaultProviderPopup.addItem(withTitle: "Codex SDK") }
         if openRouter { defaultProviderPopup.addItem(withTitle: "OpenRouter") }
+        if anthropic { defaultProviderPopup.addItem(withTitle: "Anthropic") }
+        if xai { defaultProviderPopup.addItem(withTitle: "xAI") }
         if let previousSelection, defaultProviderPopup.itemTitles.contains(previousSelection) {
             defaultProviderPopup.selectItem(withTitle: previousSelection)
         }
-        installButton.isEnabled = (codex || openRouter) && !busy
+        installButton.isEnabled = (codex || openRouter || anthropic || xai) && !busy
     }
 
     private func setBusy(_ value: Bool, status: String) {
@@ -467,9 +508,13 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
         if value { progress.startAnimation(nil) } else { progress.stopAnimation(nil) }
         codexCheckbox.isEnabled = !value
         openRouterCheckbox.isEnabled = !value
+        anthropicCheckbox.isEnabled = !value
+        xaiCheckbox.isEnabled = !value
         installButton.isEnabled = !value
         installButton.alphaValue = value ? 0.55 : 1
         authButton.isEnabled = !value
+        anthropicAuthButton.isEnabled = !value
+        xaiAuthButton.isEnabled = !value
         doctorButton.isEnabled = !value
         repairButton.isEnabled = !value
         uninstallButton.isEnabled = !value
@@ -621,11 +666,26 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
     @objc private func startInstall() {
         let codex = codexCheckbox.state == .on
         let openRouter = openRouterCheckbox.state == .on
-        guard codex || openRouter else { return }
-        let defaultProvider = defaultProviderPopup.titleOfSelectedItem == "OpenRouter" ? "openrouter" : "codex"
-        let providers = [codex ? "codex" : nil, openRouter ? "openrouter" : nil].compactMap { $0 }.joined(separator: ",")
+        let anthropic = anthropicCheckbox.state == .on
+        let xai = xaiCheckbox.state == .on
+        guard codex || openRouter || anthropic || xai else { return }
+        let defaultProvider: String
+        switch defaultProviderPopup.titleOfSelectedItem {
+        case "OpenRouter": defaultProvider = "openrouter"
+        case "Anthropic": defaultProvider = "anthropic"
+        case "xAI": defaultProvider = "xai"
+        default: defaultProvider = "codex"
+        }
+        let providers = [
+            codex ? "codex" : nil,
+            openRouter ? "openrouter" : nil,
+            anthropic ? "anthropic" : nil,
+            xai ? "xai" : nil
+        ].compactMap { $0 }.joined(separator: ",")
         let codexModel = codexModelPopup.titleOfSelectedItem ?? "gpt-5.6-sol"
         let openRouterModel = openRouterModelPopup.titleOfSelectedItem ?? "anthropic/claude-sonnet-4.6"
+        let anthropicModel = anthropicModelPopup.titleOfSelectedItem ?? "claude-sonnet-4-6"
+        let xaiModel = xaiModelPopup.titleOfSelectedItem ?? "grok-4.6"
         let key = openRouterKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if openRouter && !key.isEmpty && !isValidOpenRouterKey(key) {
             let alert = NSAlert()
@@ -643,6 +703,8 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
                 providers: providers,
                 codexModel: codexModel,
                 openRouterModel: openRouterModel,
+                anthropicModel: anthropicModel,
+                xaiModel: xaiModel,
                 openRouterKey: key
             )
         }
@@ -656,6 +718,28 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
                 confirmationSentinel: "Welcome to Codex"
             )
             return "Codex sign-in is visible in the Bot terminal. Complete the displayed device flow."
+        }
+    }
+
+    @objc private func startAnthropicAuth() {
+        runOperation("Opening Anthropic sign-in inside the Bot computer…") {
+            try await self.sendRemoteCommand(
+                "/home/box/.local/bin/grokbot-router auth anthropic",
+                relaunch: false,
+                confirmationSentinel: "Anthropic"
+            )
+            return "Anthropic sign-in is visible in the Bot terminal. Complete the displayed sign-in."
+        }
+    }
+
+    @objc private func startXaiAuth() {
+        runOperation("Opening xAI sign-in inside the Bot computer…") {
+            try await self.sendRemoteCommand(
+                "/home/box/.local/bin/grokbot-router auth xai",
+                relaunch: false,
+                confirmationSentinel: "xAI Grok sign-in"
+            )
+            return "xAI sign-in is visible in the Bot terminal. Open the shown link on any device and confirm the code."
         }
     }
 
@@ -1358,6 +1442,8 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
         providers: String,
         codexModel: String,
         openRouterModel: String,
+        anthropicModel: String,
+        xaiModel: String,
         openRouterKey: String
     ) async throws -> String {
         try validateGrokApp()
@@ -1423,7 +1509,7 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
             "rm -rf /tmp/grokbot-router-installer/payload",
             "mkdir -p /tmp/grokbot-router-installer/payload",
             "tar -xzf /tmp/grokbot-router-installer/payload.tgz -C /tmp/grokbot-router-installer/payload --strip-components=1",
-            "if ROUTER_INSTALL_ATTEMPT=\(installAttempt) bash /tmp/grokbot-router-installer/payload/remote/install.sh --provider \(defaultProvider) --providers \(providers) --codex-model \(codexModel) --openrouter-model \(openRouterModel); then clear; printf %s \(installPayload) | base64 -d; else code=$?; printf %s \(failurePayload) | base64 -d; echo $code; fi"
+            "if ROUTER_INSTALL_ATTEMPT=\(installAttempt) bash /tmp/grokbot-router-installer/payload/remote/install.sh --provider \(defaultProvider) --providers \(providers) --codex-model \(codexModel) --openrouter-model \(openRouterModel) --anthropic-model \(anthropicModel) --xai-model \(xaiModel); then clear; printf %s \(installPayload) | base64 -d; else code=$?; printf %s \(failurePayload) | base64 -d; echo $code; fi"
         ])
         appendLog("Transferring a SHA-256-verified payload into the Bot computer…")
         let installVNC = try await typeRemoteCommandsResilient(commands, client: client, pageSession: pageSession)
@@ -1444,6 +1530,12 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
         _ = try? await evaluate(workflowClient, sessionID: workflowPageSession, expression: "window.desktop.forceGatewayReconnect().then(()=>true)")
         if defaultProvider == "openrouter" {
             return "Installed with OpenRouter selected. Send /router doctor in Grok Bot."
+        }
+        if defaultProvider == "anthropic" {
+            return "Installed. Click Start Anthropic Sign-in, then send /router doctor in Grok Bot."
+        }
+        if defaultProvider == "xai" {
+            return "Installed. Click Start xAI Sign-in, then send /router doctor in Grok Bot."
         }
         if providers.contains("codex") {
             return "Installed. Click Start Codex Sign-in, then send /router doctor in Grok Bot."

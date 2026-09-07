@@ -14,7 +14,7 @@
         <div>
           <div class="eyebrow">GROK BOT 0.30.0 <span>•</span> WINDOWS</div>
           <h1>Bring your own model.</h1>
-          <p>Keep Grok Bot’s interface, computer, files and tools. Route each Bot through Codex or OpenRouter, then switch models from the normal chat composer.</p>
+          <p>Keep Grok Bot’s interface, computer, files and tools. Route each Bot through Codex, OpenRouter, Anthropic, or xAI, then switch models from the normal chat composer.</p>
         </div>
       </header>
 
@@ -26,10 +26,12 @@
         <div class="checks">
           <label><input id="codexEnabled" type="checkbox" checked /> <span>Codex SDK</span></label>
           <label><input id="openRouterEnabled" type="checkbox" checked /> <span>OpenRouter</span></label>
+          <label><input id="anthropicEnabled" type="checkbox" checked /> <span>Anthropic</span></label>
+          <label><input id="xaiEnabled" type="checkbox" checked /> <span>xAI</span></label>
         </div>
         <div class="form-grid">
           <label for="defaultProvider">Default provider</label>
-          <select id="defaultProvider"><option value="codex">Codex SDK</option><option value="openrouter">OpenRouter</option></select>
+          <select id="defaultProvider"><option value="codex">Codex SDK</option><option value="openrouter">OpenRouter</option><option value="anthropic">Anthropic</option><option value="xai">xAI</option></select>
           <label for="codexModel">Codex model</label>
           <select id="codexModel"><option>gpt-5.6-sol</option><option>gpt-5.6-terra</option><option>gpt-5.6-luna</option></select>
           <label for="openRouterModel">OpenRouter model</label>
@@ -37,6 +39,13 @@
             <option>anthropic/claude-sonnet-4.6</option><option>openai/gpt-5.6-sol</option>
             <option>openai/gpt-5.6-terra</option><option>openai/gpt-5.6-luna</option>
             <option>google/gemini-3.1-pro-preview</option><option>google/gemini-3.1-flash-lite</option>
+          </select>
+          <label for="anthropicModel">Anthropic model</label>
+          <select id="anthropicModel"><option>claude-sonnet-4-6</option><option>claude-opus-4-6</option><option>claude-haiku-4-5</option><option>claude-fable-5-1</option></select>
+          <label for="xaiModel">xAI model</label>
+          <select id="xaiModel">
+            <option>grok-4.6</option><option>grok-build-0.1</option><option>grok-4.3</option>
+            <option>grok-4.20-0309-reasoning</option><option>grok-4.20-0309-non-reasoning</option>
           </select>
           <label for="openRouterKey">OpenRouter key</label>
           <input id="openRouterKey" type="password" autocomplete="off" spellcheck="false" placeholder="Stored only in Grok Bot Secrets" />
@@ -55,6 +64,8 @@
         <div class="tools-label">TOOLS</div>
         <div class="tools">
           <button data-action="auth">Codex sign-in</button>
+          <button data-action="authAnthropic">Anthropic sign-in</button>
+          <button data-action="authXai">xAI sign-in</button>
           <button data-action="doctor">Check health</button>
           <button data-action="repair">Repair</button>
           <button data-action="uninstall">Restore stock</button>

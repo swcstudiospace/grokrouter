@@ -14,6 +14,22 @@ CONFIG_PATH="$INSTALL_ROOT/provider.json"
 PATCHER="$INSTALL_ROOT/patch/router_patch.py"
 HOST_REGISTRY_TOOL="$INSTALL_ROOT/bin/host-registry"
 CODEX_CLI="$INSTALL_ROOT/node_modules/.bin/codex"
+CLAUDE_CLI=""
+for candidate in "$INSTALL_ROOT"/node_modules/@anthropic-ai/claude-agent-sdk-*/claude; do
+  if [[ -x "$candidate" ]]; then
+    CLAUDE_CLI="$candidate"
+    break
+  fi
+done
+PROVIDER_RUNNER="$INSTALL_ROOT/run-provider.mjs"
+KNOWN_PROVIDERS="codex openrouter anthropic xai"
+is_known_provider() {
+  local candidate
+  for candidate in $KNOWN_PROVIDERS; do
+    [[ "$1" == "$candidate" ]] && return 0
+  done
+  return 1
+}
 GROK_SKILLS_ROOT="${ROUTER_GROK_SKILLS_ROOT:-/home/box/.grok/skills}"
 PATCH_ARGS=(
   --host "${ROUTER_PATCH_HOST:-/home/box/sand-host/host-main.cjs}"
@@ -68,9 +84,14 @@ usage() {
     "  doctor                         Verify runtime, host patch, and credentials" \
     "  repair                         Reapply the exact-gated host patch" \
     "  auth codex                     Start Codex device sign-in" \
-    "  provider codex|openrouter      Change the default for new Bot threads" \
+    "  auth anthropic                 Start the Claude Agent SDK sign-in" \
+    "  auth xai                       Start the xAI Grok subscription sign-in" \
+    "  provider PROVIDER              Change the default for new Bot threads" \
+    "                                 (codex, openrouter, anthropic, or xai)" \
     "  model codex MODEL              Change the default Codex model" \
     "  model openrouter vendor/model  Change the default OpenRouter model" \
+    "  model anthropic MODEL          Change the default Anthropic model" \
+    "  model xai MODEL                Change the default xAI model" \
     "  enable | disable               Enable or bypass the router" \
     "  restart                        Restart Grok Bot's host process" \
     "  uninstall                      Restore the verified stock host" \
@@ -187,6 +208,8 @@ print(f"Default provider: {config.get('provider', 'codex')}")
 print(f"Providers: {', '.join(config.get('providers', []))}")
 print(f"Codex model: {config.get('codexModel', 'not configured')}")
 print(f"OpenRouter model: {config.get('openRouterModel', 'not configured')}")
+print(f"Anthropic model: {config.get('anthropicModel', 'not configured')}")
+print(f"xAI model: {config.get('xaiModel', 'not configured')}")
 PY
     ;;
   doctor)
@@ -210,6 +233,14 @@ PY
     else
       printf '  CLI missing\n'
     fi
+    printf 'Anthropic\n'
+    if [[ -n "$CLAUDE_CLI" ]]; then
+      "$CLAUDE_CLI" auth status 2>&1 | sed -E 's/([A-Za-z0-9._%+-]+)@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/[account]/g' | sed 's/^/  /' || true
+    else
+      printf '  Claude Agent SDK missing (enable the Anthropic provider and reinstall)\n'
+    fi
+    printf 'xAI\n'
+    printf '  Credential: %s\n' "$(GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" node "$PROVIDER_RUNNER" --xai-status 2>&1 || true)"
     printf 'OpenRouter\n'
     python3 - <<'PY'
 import json
@@ -239,21 +270,38 @@ PY
     repair_host
     ;;
   auth)
-    if [[ "${2:-}" != "codex" ]]; then
-      printf 'ERROR: supported auth command is: grokbot-router auth codex\n' >&2
-      exit 2
-    fi
-    if [[ ! -x "$CODEX_CLI" ]]; then
-      printf 'ERROR: Codex CLI is missing; reinstall the router\n' >&2
-      exit 1
-    fi
-    exec "$CODEX_CLI" login --device-auth
+    case "${2:-}" in
+      codex)
+        if [[ ! -x "$CODEX_CLI" ]]; then
+          printf 'ERROR: Codex CLI is missing; reinstall the router\n' >&2
+          exit 1
+        fi
+        exec "$CODEX_CLI" login --device-auth
+        ;;
+      anthropic)
+        if [[ -z "$CLAUDE_CLI" ]]; then
+          printf 'ERROR: the Claude Agent SDK is missing; enable the Anthropic provider and reinstall the router\n' >&2
+          exit 1
+        fi
+        # The bundled binary owns the Anthropic sign-in. Third-party use of a
+        # Claude subscription is permitted only through the Agent SDK, so the
+        # router never handles a claude.ai OAuth token itself.
+        exec "$CLAUDE_CLI" auth login
+        ;;
+      xai)
+        exec env GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" node "$PROVIDER_RUNNER" --xai-login
+        ;;
+      *)
+        printf 'ERROR: supported auth commands are: grokbot-router auth codex|anthropic|xai\n' >&2
+        exit 2
+        ;;
+    esac
     ;;
   provider)
     require_config
     provider="${2:-}"
-    if [[ "$provider" != "codex" && "$provider" != "openrouter" ]]; then
-      printf 'ERROR: provider must be codex or openrouter\n' >&2
+    if ! is_known_provider "$provider"; then
+      printf 'ERROR: provider must be one of: %s\n' "${KNOWN_PROVIDERS// /, }" >&2
       exit 2
     fi
     update_config provider "$provider"
@@ -276,8 +324,12 @@ PY
         exit 2
       fi
       update_config openRouterModel "$model"
+    elif [[ "$provider" == "anthropic" ]]; then
+      update_config anthropicModel "$model"
+    elif [[ "$provider" == "xai" ]]; then
+      update_config xaiModel "$model"
     else
-      printf 'ERROR: provider must be codex or openrouter\n' >&2
+      printf 'ERROR: provider must be one of: %s\n' "${KNOWN_PROVIDERS// /, }" >&2
       exit 2
     fi
     printf '%s default model updated to %s\n' "$provider" "$model"
@@ -318,7 +370,7 @@ PY
   logs)
     if [[ -f "$INSTALL_ROOT/audit.jsonl" ]]; then
       tail -n 50 "$INSTALL_ROOT/audit.jsonl" \
-        | sed -E 's/(sk-or-v1-|sk-[A-Za-z0-9_-]*|gh[opsu]_[A-Za-z0-9_-]+)/[REDACTED]/g'
+        | sed -E 's/(sk-or-v1-|sk-[A-Za-z0-9_-]*|gh[opsu]_[A-Za-z0-9_-]+|xai-[A-Za-z0-9_-]+|ey[A-Za-z0-9_-]{20,}\.[A-Za-z0-9._-]+)/[REDACTED]/g'
     else
       printf 'No audit log exists yet.\n'
     fi

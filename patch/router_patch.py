@@ -267,10 +267,16 @@ SESSION_CODE = r'''
       // GROKBOT_MODEL_ROUTER_V45: route enabled sessions through the provider adapter.
       const grokBotRouterConfig = loadGrokBotRouterConfig();
       if (grokBotRouterConfig) {
-        const provider = grokBotRouterConfig.provider === "openrouter" ? "openrouter" : "codex";
-        const modelId = provider === "openrouter"
-          ? grokBotRouterConfig.openRouterModel || "anthropic/claude-sonnet-4.6"
-          : grokBotRouterConfig.codexModel || "gpt-5.6-sol";
+        const routerDefaults = {
+          codex: grokBotRouterConfig.codexModel || "gpt-5.6-sol",
+          openrouter: grokBotRouterConfig.openRouterModel || "anthropic/claude-sonnet-4.6",
+          anthropic: grokBotRouterConfig.anthropicModel || "claude-sonnet-4-6",
+          xai: grokBotRouterConfig.xaiModel || "grok-4.6"
+        };
+        const provider = Object.prototype.hasOwnProperty.call(routerDefaults, grokBotRouterConfig.provider)
+          ? grokBotRouterConfig.provider
+          : "codex";
+        const modelId = routerDefaults[provider];
         return {
           getExecutor: () => createGrokBotRouterPromptExecutor(grokBotRouterConfig, sessionOptions),
           getModelId: () => modelId

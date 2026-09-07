@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Bring your own model to Grok Bot.</strong><br>
-  Route the official Grok Bot desktop app through the Codex SDK or OpenRouter<br>
+  Route the official Grok Bot desktop app through the Codex SDK, OpenRouter, Anthropic, or xAI<br>
   without giving up its chat, Bots, files, computer, or tool boundary.
 </p>
 
@@ -22,11 +22,11 @@
 
 ## What does it do?
 
-You keep using the normal Grok Bot app. GrokRouter lets an individual Bot use the Codex SDK or a model from OpenRouter as its AI brain.
+You keep using the normal Grok Bot app. GrokRouter lets an individual Bot use the Codex SDK, any model on OpenRouter (including the free ones), a Claude subscription through the Claude Agent SDK, or a Grok subscription through xAI's own sign-in as its AI brain.
 
 | You keep | You choose |
 | --- | --- |
-| Grok Bot's desktop app and chat | Codex SDK or OpenRouter |
+| Grok Bot's desktop app and chat | Codex SDK, OpenRouter, Anthropic, or xAI |
 | Existing Bots and conversations | A different provider per Bot |
 | Cloud computer, files, browser, and permissions | A different model and reasoning level per Bot |
 | Grok's outer tool-execution boundary | Stock Grok again at any time |
@@ -52,7 +52,7 @@ Continue only if every answer is **yes**:
 - **Mac:** You have an Apple-silicon Mac—M1, M2, M3, M4, or newer—running macOS 12 or later.
 - **Grok Bot:** The official **Grok Bot 0.30.0** app is inside your Mac's main `Applications` folder.
 - **Bot computer:** You can select a Bot in Grok Bot and click **Open computer**.
-- **Model access:** You have a Codex account, an OpenRouter API key beginning with `sk-or-v1-`, or both.
+- **Model access:** You have at least one of: a Codex account, an OpenRouter API key beginning with `sk-or-v1-` (free models exist, so a key with no credit still works), a Claude Pro/Max subscription, or a SuperGrok or X Premium+ subscription.
 
 Windows builds exist for developers to inspect, but Windows is not yet the beginner installation path.
 
@@ -94,12 +94,16 @@ Pick the row that matches what you have:
 | --- | --- |
 | A Codex account | Keep **Codex SDK** checked. You can uncheck OpenRouter. Select **Codex SDK** as the default. |
 | An OpenRouter key | Keep **OpenRouter** checked, paste the complete `sk-or-v1-...` key, and select **OpenRouter** as the default. |
-| Both | Keep both checked, paste your OpenRouter key, and choose whichever provider you want new Bots to use first. |
+| A Claude Pro or Max subscription | Keep **Anthropic** checked and select **Anthropic** as the default. Sign in after installation with **Start Anthropic Sign-in**. Usage draws on your plan's Agent SDK credit. |
+| A SuperGrok or X Premium+ subscription | Keep **xAI** checked and select **xAI** as the default. Sign in after installation with **Start xAI Sign-in**. |
+| Several | Keep each one checked, paste your OpenRouter key if you have one, and choose whichever provider you want new Bots to use first. |
 
 Click **Install Router** and wait. Do not close Grok Bot or GrokRouter.
 
 - If GrokRouter asks for a Bot computer, return to Grok Bot, select any Bot, and click **Open computer**.
 - If you selected Codex, click **Start Codex Sign-in** after installation and complete the sign-in shown in the Bot terminal.
+- If you selected Anthropic, click **Start Anthropic Sign-in**. The Claude Agent SDK's own sign-in runs in the Bot terminal; GrokRouter never sees or stores a claude.ai token.
+- If you selected xAI, click **Start xAI Sign-in**, open the shown link on any device, and confirm the code. The refresh token stays inside the Bot computer with owner-only permissions.
 - Your OpenRouter key is sent directly to Grok Bot's protected Secrets store and cleared from the installer field.
 
 The installer has finished when its log shows a line beginning with `✓ Installed`.
@@ -143,6 +147,8 @@ From now on, stay inside Grok Bot. You do not need to keep GrokRouter open.
 | Installation stopped with another error | Click **Copy safe diagnostics** and paste the report into a GitHub issue. It excludes credentials, conversations, and Bot files. |
 | You are testing the Windows x64 or Arm64 build | Windows is a source preview, not the supported beginner path. Do not use the Mac Terminal command. Report the exact CI artifact, last installer phase, prior-router history, and complete safe diagnostics. |
 | Codex is not signed in | Open GrokRouter, click **Start Codex Sign-in**, and complete the displayed device flow. |
+| Anthropic is not signed in, or Doctor says the Claude Agent SDK is missing | Make sure **Anthropic** was checked during installation, then click **Start Anthropic Sign-in**. |
+| xAI says not signed in or sign-in expired | Click **Start xAI Sign-in** again. A 403 from xAI means that account's plan does not include agent access. |
 | OpenRouter reports a credential problem | Paste the complete key beginning with `sk-or-v1-`, without spaces before or after it. |
 | Step 5 says this Bot computer's host did not pass the stock-host checks | GrokRouter accepts a host either from the exact signed list or by structural verification (no router marker, every source anchor exactly once, a read-only patch that passes `node --check`, and a plausible size). If both fail, nothing is patched. If you previously installed OpenGrok or another router, use **Restore Stock Grok Bot** first. Otherwise click **Copy safe diagnostics** and open the support issue; the complete non-secret fingerprint and the reason are included. |
 | The version says beta.46, but Doctor says `stock-or-unknown`, `no router marker`, or that the host adapter is not patched | The runtime and live host adapter are separate. **Do not update or install from inside Grok Bot.** Follow [the adapter-mismatch repair](#the-version-is-correct-but-the-host-adapter-is-not-patched). |
@@ -217,6 +223,8 @@ Type these into a Bot's normal Grok chat box:
 | Command | Plain-English meaning |
 | --- | --- |
 | `/models` | Show the models you can use. |
+| `/models free` | List the free OpenRouter models from the live catalog. |
+| `/models search <text>` | Search every OpenRouter model. |
 | Paste a listed `vendor/model` ID | Switch this Bot to that model. |
 | `/provider` | Show which provider and model this Bot is using. |
 | `/reasoning low\|medium\|high\|xhigh` | Change Codex thinking effort. |
@@ -434,7 +442,15 @@ Type these into Grok Bot's normal composer. The installer publishes user-invocab
 | `/provider` | Show this Bot's provider and model |
 | `/provider codex` | Switch this Bot to the Codex SDK |
 | `/provider openrouter` | Switch this Bot to OpenRouter |
+| `/provider anthropic` | Switch this Bot to Anthropic through the Claude Agent SDK |
+| `/provider xai` | Switch this Bot to xAI (Grok subscription sign-in) |
 | `/models` | Show the configured model catalog |
+| `/models free` | List free OpenRouter models from the live public catalog |
+| `/models all [page]` | Page through every OpenRouter model |
+| `/models search <text>` | Search the OpenRouter catalog by vendor or model name |
+| `/model free` | Select OpenRouter's rotating `openrouter/free` router |
+| `/model opus` | Select the Anthropic `claude-opus-4-6` alias |
+| `/model grok-build-0.1` | Select a specific xAI model |
 | `/model sol` | Select the Codex `gpt-5.6-sol` alias |
 | `/model anthropic/claude-sonnet-4.6` | Select a specific OpenRouter model |
 | `/models openai/gpt-5.6-luna` | Forgiving plural alias that switches models |
@@ -464,7 +480,9 @@ Invalid or near-miss model controls return bounded help instead of becoming mode
 | Lifecycle watchdog | `remote/grokbot-router-watchdog` | Rate-limited repair when Grok replaces the live host with a known stock build; never repairs an unknown build or intentional restore |
 | Compatibility manifests | `patch/manifests/`, `compatibility/` | Bundled exact Grok version, source anchors, signed centrally updateable stock-host SHA-256 and byte-count pairs, and the pinned registry public key |
 | Patch engine | `patch/router_patch.py` | Original transformation, syntax check, atomic activation, verified backup, dry run, and restore |
-| Provider runtime | `runtime/run-provider.mjs` | Controls, stable Bot identity, per-Bot state, replay protection, Codex/OpenRouter adapters, tool conversion, and redacted audit |
+| Provider runtime | `runtime/run-provider.mjs` | Controls, stable Bot identity, per-Bot state, replay protection, Codex/OpenRouter/Anthropic/xAI adapters, tool conversion, and redacted audit |
+| OpenRouter catalog | `runtime/openrouter-catalog.mjs` | Fetches and caches the public model list for `/models free`, `/models all`, and `/models search` |
+| xAI sign-in | `runtime/xai-oauth.mjs` | Device-code sign-in, owner-only token storage, refresh, and an origin guard that keeps the bearer on xAI hosts |
 | Provider defaults | `runtime/provider.default.json` | Packaged provider/model catalog and installer defaults—never credentials |
 | Automated tests | `tests/` | Runtime behavior, patch/restore, payload integrity, and native installer contracts |
 | CI | `.github/workflows/ci.yml` | Runs the Mac suite/build and native Windows x64/Arm64 package builds on every push and pull request |

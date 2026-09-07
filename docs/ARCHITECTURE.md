@@ -11,7 +11,7 @@ This document is the implementation-level companion to [How it works, without th
 | Official Grok Bot | Chat UI, Bots, transcript, computer, files, browser, tool execution, permission UX and assistant delivery | Routed provider credentials or per-Bot provider selection |
 | Patched host executor | Decide stock versus routed path, sanitize the host payload, launch the router runtime and translate its result back into Grok's protocol | Provider implementation, long-term state or arbitrary tool execution |
 | Router runtime | Deterministic controls, stable Bot identity, provider/model state, replay protection, provider calls, transcript conversion and redacted audit | Grok's UI, permission decisions or the computer itself |
-| Codex SDK / OpenRouter | Model inference and provider-native thread state | Authority to invent a Grok tool that the host did not offer |
+| Codex SDK / OpenRouter / Claude Agent SDK / xAI | Model inference and provider-native thread state | Authority to invent a Grok tool that the host did not offer |
 | Native platform installer shells | Swift/AppKit on macOS and sandboxed Electron on Windows: exact compatibility checks, loopback/noVNC transport, checksummed install, provider setup, restore and cleanup | Grok account data or an unknown host build |
 
 ## Install and update flow
@@ -40,7 +40,7 @@ The installer links only missing skill names or links already owned by the curre
 2. The small host adapter checks `provider.json`. If routing is disabled, the original inference path continues untouched.
 3. If enabled, the adapter launches the isolated Node runtime and sends sanitized JSON over stdin: config, transcript, tool schemas, and stable session identifiers.
 4. The runtime selects the provider stored for that Bot.
-5. Codex starts/resumes an SDK thread; OpenRouter sends a Chat Completions request with native function schemas.
+5. Codex starts/resumes an SDK thread; the Claude Agent SDK starts/resumes a session with the same structured contract; OpenRouter and xAI send a Chat Completions request with native function schemas.
 6. A normal text response is wrapped in Grok's user-delivery tool. A provider tool request is returned to Grok for execution.
 7. Grok executes computer/browser/file/orchestration tools in its existing host. Their results re-enter the transcript and the same provider thread continues.
 
@@ -67,6 +67,18 @@ Printed pseudo-tool syntax is not authority. The guarded OpenRouter compatibilit
 Codex receives a JSON response schema with `text` and `toolCalls`. Grok's outer tools are described in the prompt with their JSON schemas. Codex can do native Codex work inside `/workspace` or request an outer Grok tool. The adapter never claims a tool completed until Grok returns its result in a later transcript turn.
 
 Images are written to a private temporary directory and passed as Codex `local_image` inputs. At most four images and 20 MB per image are accepted per turn.
+
+## Anthropic bridge
+
+The Anthropic provider drives `@anthropic-ai/claude-agent-sdk`, which spawns its bundled `claude` binary. The binary owns sign-in (`grokbot-router auth anthropic` runs `claude auth login` in the Bot terminal) and bills a subscription's Agent SDK credit, so the router never touches a claude.ai OAuth token. The prompt and JSON `text` + `toolCalls` contract are shared with the Codex bridge; the per-Bot thread ID stores the SDK session ID and is reset by `/router reset`, a model change, or a failed resume.
+
+## xAI bridge
+
+`runtime/xai-oauth.mjs` implements the RFC 8628 device flow against `auth.x.ai` with xAI's public desktop client. Credentials are written with mode 0600 beside the runtime, refreshed 60 seconds before expiry, and quarantined on `invalid_grant` so the user is told to sign in again instead of the router retrying forever. The request path reuses the OpenRouter bridge as an OpenAI-compatible transport with `reasoning_effort`, one refresh-and-retry on 401, and an origin guard that refuses to send the bearer anywhere but `api.x.ai` or `cli-chat-proxy.grok.com`.
+
+## OpenRouter catalog
+
+`/models free`, `/models all`, and `/models search` read the public `GET /api/v1/models` list, which needs no credential. The runtime caches it for an hour with mode 0600, falls back to the cached copy when OpenRouter is unreachable, and never blocks `/model <id>`: switching consults only the cache, so an unlisted or tool-less model produces a note rather than a refusal.
 
 ## OpenRouter bridge
 

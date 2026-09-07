@@ -25,6 +25,8 @@ trap cleanup EXIT
 
 mkdir -p "$BUILD_ROOT" "$PAYLOAD_ROOT/runtime" "$PAYLOAD_ROOT/patch/manifests" "$PAYLOAD_ROOT/remote" "$PAYLOAD_ROOT/skills" "$PAYLOAD_ROOT/compatibility"
 cp "$PROJECT_ROOT/runtime/run-provider.mjs" "$PAYLOAD_ROOT/runtime/run-provider.mjs"
+cp "$PROJECT_ROOT/runtime/openrouter-catalog.mjs" "$PAYLOAD_ROOT/runtime/openrouter-catalog.mjs"
+cp "$PROJECT_ROOT/runtime/xai-oauth.mjs" "$PAYLOAD_ROOT/runtime/xai-oauth.mjs"
 cp "$PROJECT_ROOT/runtime/package.json" "$PAYLOAD_ROOT/runtime/package.json"
 cp "$PROJECT_ROOT/runtime/package-lock.json" "$PAYLOAD_ROOT/runtime/package-lock.json"
 cp "$PROJECT_ROOT/runtime/provider.default.json" "$PAYLOAD_ROOT/runtime/provider.default.json"

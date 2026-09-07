@@ -3,6 +3,22 @@ import { appendFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:f
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import {
+  findModel as findCatalogModel,
+  formatModelPage,
+  freeModels,
+  loadCatalog,
+  searchModels,
+} from "./openrouter-catalog.mjs";
+import {
+  XAI_API_BASE_URL,
+  XAI_SUBSCRIPTION_BASE_URL,
+  accessToken as xaiAccessToken,
+  assertBearerOrigin as assertXaiBearerOrigin,
+  authStatus as xaiAuthStatus,
+  deviceLogin as xaiDeviceLogin,
+} from "./xai-oauth.mjs";
+
 const runtimeDirectory = dirname(fileURLToPath(import.meta.url));
 const MAX_INPUT_BYTES = 50 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -425,7 +441,7 @@ function jsonString(value) {
 
 function redactDiagnostic(value, limit = 500) {
   return String(value ?? "")
-    .replace(/sk-or-v1-[a-z0-9_-]+|sk-[a-z0-9_-]+|gh[opsu]_[a-z0-9_-]+/gi, "[REDACTED]")
+    .replace(/sk-or-v1-[a-z0-9_-]+|sk-[a-z0-9_-]+|gh[opsu]_[a-z0-9_-]+|xai-[a-z0-9_-]+|Bearer\s+[a-z0-9._-]+|ey[a-z0-9_-]{20,}\.[a-z0-9._-]+/gi, "[REDACTED]")
     .replace(/\s+/g, " ")
     .slice(0, limit);
 }
@@ -1020,7 +1036,45 @@ async function persistedOpenRouterKey(config) {
 
 export async function runOpenRouter(config, messages, tools, fetchImpl = fetch) {
   const apiKey = await persistedOpenRouterKey(config);
-  const model = config.openRouterModel || "anthropic/claude-sonnet-4.6";
+  return runOpenAICompatible(config, messages, tools, fetchImpl, {
+    label: "OpenRouter",
+    model: config.openRouterModel || "anthropic/claude-sonnet-4.6",
+    reasoning: config.openRouterReasoning || "medium",
+    baseUrl: String(config.openRouterBaseUrl || "https://openrouter.ai/api/v1").replace(/\/$/, ""),
+    bearer: async () => apiKey,
+  });
+}
+
+function xaiBaseUrl(config, model) {
+  const subscriptionModels = Array.isArray(config.xaiSubscriptionModels) ? config.xaiSubscriptionModels : [];
+  if (subscriptionModels.includes(model)) return config.xaiSubscriptionBaseUrl || XAI_SUBSCRIPTION_BASE_URL;
+  return String(config.xaiBaseUrl || XAI_API_BASE_URL).replace(/\/$/, "");
+}
+
+export async function runXai(config, messages, tools, fetchImpl = fetch) {
+  const model = config.xaiModel || "grok-4.6";
+  let refreshed = false;
+  return runOpenAICompatible(config, messages, tools, fetchImpl, {
+    label: "xAI",
+    model,
+    reasoning: config.xaiReasoning || "medium",
+    baseUrl: xaiBaseUrl(config, model),
+    guardUrl: assertXaiBearerOrigin,
+    bearer: async ({ retryAfterUnauthorized = false } = {}) => {
+      if (retryAfterUnauthorized && !refreshed) {
+        refreshed = true;
+        return xaiAccessToken(config, fetchImpl, { forceRefresh: true });
+      }
+      return xaiAccessToken(config, fetchImpl);
+    },
+    // xAI's OpenAI-compatible endpoint takes `reasoning_effort` and rejects
+    // the OpenRouter-only `reasoning` object and session hints.
+    bodyExtras: (reasoning) => ({ reasoning_effort: reasoning === "minimal" ? "low" : reasoning === "xhigh" ? "high" : reasoning }),
+  });
+}
+
+async function runOpenAICompatible(config, messages, tools, fetchImpl, transport) {
+  const { label, model } = transport;
   const normalizedTools = normalizeTools(tools).map((tool) => ({ type: "function", function: tool }));
   const convertedMessages = await openRouterMessages(messages);
   const visibleUserText = latestUserText(messages);
@@ -1053,7 +1107,7 @@ export async function runOpenRouter(config, messages, tools, fetchImpl = fetch) 
         role: "system",
         content: [
           "You are running inside Grok Bot through GrokRouter.",
-          `The router control plane reports that the active provider is OpenRouter and the active model is ${model}.`,
+          `The router control plane reports that the active provider is ${label} and the active model is ${model}.`,
           "The in-chat commands /provider, /models, /model, /reasoning, and /router are real and are handled before model inference.",
           "If asked which provider or model is active, use these router facts. Never deny or invent router commands.",
           "Use an outer Grok tool only when the user's task actually requires it. A literal or exact-text reply must be answered directly without tools.",
@@ -1080,16 +1134,22 @@ export async function runOpenRouter(config, messages, tools, fetchImpl = fetch) 
         : requiresTool ? "required" : "auto",
       parallel_tool_calls: false,
     } : {}),
-    reasoning: { effort: config.openRouterReasoning || "medium" },
+    ...(transport.bodyExtras
+      ? transport.bodyExtras(transport.reasoning)
+      : {
+        reasoning: { effort: transport.reasoning },
+        ...(config.adapterSessionId ? { session_id: config.adapterSessionId } : {}),
+      }),
     stream: false,
-    ...(config.adapterSessionId ? { session_id: config.adapterSessionId } : {}),
   };
-  const baseUrl = String(config.openRouterBaseUrl || "https://openrouter.ai/api/v1").replace(/\/$/, "");
-  const request = async (requestBody) => {
-    const response = await fetchImpl(`${baseUrl}/chat/completions`, {
+  const endpoint = `${transport.baseUrl}/chat/completions`;
+  if (transport.guardUrl) transport.guardUrl(endpoint);
+  const request = async (requestBody, attempt = 0) => {
+    const token = await transport.bearer({ retryAfterUnauthorized: attempt > 0 });
+    const response = await fetchImpl(endpoint, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
         "X-Title": "GrokRouter",
       },
@@ -1097,12 +1157,17 @@ export async function runOpenRouter(config, messages, tools, fetchImpl = fetch) 
       signal: AbortSignal.timeout(Number(config.timeoutMs || 15 * 60_000)),
     });
     const payload = await response.json().catch(() => ({}));
+    if (response.status === 401 && attempt === 0 && transport.guardUrl) {
+      // A subscription bearer can expire between the pre-flight check and the
+      // request; refresh exactly once before reporting the failure.
+      return request(requestBody, 1);
+    }
     if (!response.ok || payload?.error) {
       const detail = typeof payload?.error?.message === "string" ? `: ${payload.error.message}` : "";
-      throw new Error(`OpenRouter request failed (${response.status}${detail})`);
+      throw new Error(`${label} request failed (${response.status}${detail})`);
     }
     const message = payload?.choices?.[0]?.message;
-    if (!message) throw new Error("OpenRouter returned no completion choice");
+    if (!message) throw new Error(`${label} returned no completion choice`);
     const text = typeof message.content === "string"
       ? message.content.trim()
       : Array.isArray(message.content)
@@ -1317,6 +1382,78 @@ function codexThreadOptions(config) {
     webSearchMode: config.webSearchMode || "live",
     approvalPolicy: config.approvalPolicy || "never",
     skipGitRepoCheck: true,
+  };
+}
+
+const ANTHROPIC_EFFORT = { minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "xhigh" };
+
+function anthropicPrompt(config, messages, tools, resuming) {
+  return codexPrompt({ ...config, codexModel: config.anthropicModel || "claude-sonnet-4-6" }, messages, tools, resuming)
+    .replace("the active provider is Codex SDK", "the active provider is Anthropic (Claude Agent SDK)")
+    .replace("Use Codex's native shell, file editing, and web tools", "Use Claude Code's native shell, file editing, and web tools");
+}
+
+async function createAnthropicQuery() {
+  const { query } = await import("@anthropic-ai/claude-agent-sdk");
+  return query;
+}
+
+/**
+ * Anthropic provider. It never touches a claude.ai OAuth token directly: the
+ * Claude Agent SDK spawns its bundled `claude` binary, which owns sign-in and
+ * bills a subscription's Agent SDK credit, the path Anthropic permits for
+ * third-party harnesses.
+ */
+export async function runAnthropic(config, messages, tools, queryFactory = null) {
+  const query = queryFactory ? queryFactory() : await createAnthropicQuery();
+  const model = config.anthropicModel || "claude-sonnet-4-6";
+  const resuming = Boolean(config.anthropicSessionId);
+  const prompt = anthropicPrompt(config, messages, tools, resuming);
+  const images = await codexImages(messages, config);
+  const promptText = images.length
+    ? `${prompt}\n\nAttached image files: ${images.join(", ")}`
+    : prompt;
+  const options = {
+    cwd: config.workingDirectory || "/workspace",
+    model,
+    effort: ANTHROPIC_EFFORT[config.anthropicReasoning] || "medium",
+    permissionMode: "bypassPermissions",
+    allowDangerouslySkipPermissions: true,
+    ...(config.anthropicExecutablePath ? { pathToClaudeCodeExecutable: config.anthropicExecutablePath } : {}),
+    ...(resuming ? { resume: config.anthropicSessionId } : {}),
+    env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: `grokrouter/${ROUTER_VERSION}` },
+  };
+  const run = async (runOptions) => {
+    let sessionId = runOptions.resume || null;
+    let finalText = "";
+    let usage = {};
+    for await (const message of query({ prompt: promptText, options: runOptions })) {
+      if (typeof message?.session_id === "string") sessionId = message.session_id;
+      if (message?.type === "result") {
+        if (message.subtype && message.subtype !== "success") {
+          throw new Error(`Claude Agent SDK ended with ${message.subtype}`);
+        }
+        finalText = typeof message.result === "string" ? message.result : "";
+        usage = message.usage || {};
+      }
+    }
+    return { sessionId, finalText, usage };
+  };
+  let outcome;
+  try {
+    outcome = await run(options);
+  } catch (error) {
+    if (!resuming) throw error;
+    const { resume: _resume, ...fresh } = options;
+    outcome = await run(fresh);
+  }
+  const parsed = parseCodexResult(outcome.finalText);
+  if (!parsed.text && !parsed.toolCalls.length) throw new Error("Claude Agent SDK returned an empty response");
+  return {
+    ...parsed,
+    usage: normalizeUsage(outcome.usage),
+    model,
+    threadId: outcome.sessionId,
   };
 }
 
@@ -1646,12 +1783,8 @@ async function stateForTurn(config, messages, sessionOptions) {
       conversationKey: key,
       sessionId: key.slice(0, 24),
       provider,
-      model: provider === "openrouter"
-        ? config.openRouterModel || "anthropic/claude-sonnet-4.6"
-        : config.codexModel || "gpt-5.6-sol",
-      reasoning: provider === "openrouter"
-        ? config.openRouterReasoning || "medium"
-        : config.codexReasoning || "medium",
+      model: defaultModel(config, provider),
+      reasoning: defaultReasoning(config, provider),
       threadId: null,
       threadEpoch: 0,
       tools: [],
@@ -1719,18 +1852,79 @@ function isChannelControlFollowOn(sessionOptions) {
     && typeof sessionOptions.lineage?.rootParentRequestId === "string";
 }
 
+export const PROVIDERS = {
+  codex: {
+    label: "Codex SDK",
+    modelKey: "codexModel",
+    modelsKey: "codexModels",
+    reasoningKey: "codexReasoning",
+    fallbackModel: "gpt-5.6-sol",
+    signIn: "grokbot-router auth codex",
+    aliases: { sol: "gpt-5.6-sol", terra: "gpt-5.6-terra", luna: "gpt-5.6-luna", "gpt-5.6": "gpt-5.6-sol" },
+    openIds: false,
+  },
+  openrouter: {
+    label: "OpenRouter",
+    modelKey: "openRouterModel",
+    modelsKey: "openRouterModels",
+    reasoningKey: "openRouterReasoning",
+    fallbackModel: "anthropic/claude-sonnet-4.6",
+    signIn: "paste an OpenRouter key in the GrokRouter installer",
+    aliases: {
+      claude: "anthropic/claude-sonnet-4.6",
+      sonnet: "anthropic/claude-sonnet-4.6",
+      gemini: "google/gemini-3.1-pro-preview",
+      sol: "openai/gpt-5.6-sol",
+      terra: "openai/gpt-5.6-terra",
+      luna: "openai/gpt-5.6-luna",
+      free: "openrouter/free",
+    },
+    openIds: true,
+  },
+  anthropic: {
+    label: "Anthropic",
+    modelKey: "anthropicModel",
+    modelsKey: "anthropicModels",
+    reasoningKey: "anthropicReasoning",
+    fallbackModel: "claude-sonnet-4-6",
+    signIn: "grokbot-router auth anthropic",
+    aliases: { fable: "claude-fable-5-1", opus: "claude-opus-4-6", sonnet: "claude-sonnet-4-6", haiku: "claude-haiku-4-5" },
+    openIds: true,
+  },
+  xai: {
+    label: "xAI",
+    modelKey: "xaiModel",
+    modelsKey: "xaiModels",
+    reasoningKey: "xaiReasoning",
+    fallbackModel: "grok-4.6",
+    signIn: "grokbot-router auth xai",
+    aliases: { grok: "grok-4.6", build: "grok-build-0.1" },
+    openIds: true,
+  },
+};
+
+export const PROVIDER_IDS = Object.keys(PROVIDERS);
+const PROVIDER_PATTERN = PROVIDER_IDS.join("|");
+
+function providerSpec(provider) {
+  return PROVIDERS[provider] || PROVIDERS.codex;
+}
+
 function providerLabel(provider) {
-  return provider === "openrouter" ? "OpenRouter" : "Codex SDK";
+  return providerSpec(provider).label;
 }
 
 function defaultModel(config, provider) {
-  return provider === "openrouter"
-    ? config.openRouterModel || "anthropic/claude-sonnet-4.6"
-    : config.codexModel || "gpt-5.6-sol";
+  const spec = providerSpec(provider);
+  return config[spec.modelKey] || spec.fallbackModel;
+}
+
+function defaultReasoning(config, provider) {
+  return config[providerSpec(provider).reasoningKey] || "medium";
 }
 
 function configuredModels(config, provider) {
-  const models = provider === "openrouter" ? config.openRouterModels : config.codexModels;
+  const models = config[providerSpec(provider).modelsKey];
   return [...new Set([
     defaultModel(config, provider),
     ...(Array.isArray(models) ? models.filter((model) => typeof model === "string") : []),
@@ -1738,16 +1932,12 @@ function configuredModels(config, provider) {
 }
 
 function modelAliases(provider) {
-  return provider === "openrouter"
-    ? {
-      claude: "anthropic/claude-sonnet-4.6",
-      sonnet: "anthropic/claude-sonnet-4.6",
-      gemini: "google/gemini-3.1-pro-preview",
-      sol: "openai/gpt-5.6-sol",
-      terra: "openai/gpt-5.6-terra",
-      luna: "openai/gpt-5.6-luna",
-    }
-    : { sol: "gpt-5.6-sol", terra: "gpt-5.6-terra", luna: "gpt-5.6-luna", "gpt-5.6": "gpt-5.6-sol" };
+  return providerSpec(provider).aliases;
+}
+
+function validModelId(provider, model) {
+  if (provider === "openrouter") return /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._:+-]*$/i.test(model);
+  return /^[a-z0-9][a-z0-9._:+-]*$/i.test(model);
 }
 
 async function doctorText(config, state) {
@@ -1763,6 +1953,18 @@ async function doctorText(config, state) {
       ? "OpenRouter credential: present but invalid shape"
       : "OpenRouter credential: not configured");
   }
+  if (state.provider === "xai" || (config.providers || []).includes("xai")) {
+    checks.push(`xAI credential: ${await xaiAuthStatus(config)}`);
+  }
+  if (state.provider === "anthropic" || (config.providers || []).includes("anthropic")) {
+    const sdk = join(runtimeDirectory, "node_modules", "@anthropic-ai", "claude-agent-sdk", "sdk.mjs");
+    try {
+      await stat(sdk);
+      checks.push("Claude Agent SDK: installed (sign-in status: run grokbot-router doctor in the Bot terminal)");
+    } catch {
+      checks.push("Claude Agent SDK: missing");
+    }
+  }
   if (state.provider === "codex" || (config.providers || []).includes("codex")) {
     const cli = join(runtimeDirectory, "node_modules", ".bin", "codex");
     try {
@@ -1772,12 +1974,12 @@ async function doctorText(config, state) {
       checks.push("Codex CLI: missing");
     }
   }
-  checks.push(`Grok tools: bridged on demand (${state.provider === "codex" ? "structured adapter" : "native function calls"})`);
+  checks.push(`Grok tools: bridged on demand (${state.provider === "codex" || state.provider === "anthropic" ? "structured adapter" : "native function calls"})`);
   checks.push("Run a real computer and sub-agent parity test before treating those capabilities as verified for a model.");
   return checks.join("\n");
 }
 
-async function controlResult(config, key, state, input) {
+async function controlResult(config, key, state, input, catalogFetch = fetch) {
   const normalized = input.trim().replace(/\s+/g, " ");
   const command = normalized.toLowerCase();
   const persist = async (patch) => {
@@ -1798,9 +2000,12 @@ async function controlResult(config, key, state, input) {
   if (command === "/router help" || command === "/providers") {
     return result([
       "GrokRouter controls:",
-      "• /provider codex|openrouter — switch this bot",
+      "• /provider codex|openrouter|anthropic|xai — switch this bot",
       "• /provider — show active provider",
       "• /models — list configured models",
+      "• /models free — free OpenRouter models from the live catalog",
+      "• /models all [page] — every OpenRouter model, paged",
+      "• /models search <text> — search the OpenRouter catalog",
       "• /model <id> — switch this bot's model",
       "• /models <id> — also switches (forgiving alias)",
       "• paste a listed vendor/model ID by itself — also switches",
@@ -1820,16 +2025,14 @@ async function controlResult(config, key, state, input) {
     });
     return result("Provider thread reset. The Grok transcript remains available and will seed the next turn.");
   }
-  const providerMatch = normalized.match(/^\/(?:provider|router)\s+(codex|openrouter)$/i);
+  const providerMatch = normalized.match(new RegExp(`^\\/(?:provider|router)\\s+(${PROVIDER_PATTERN})$`, "i"));
   if (providerMatch) {
     const provider = providerMatch[1].toLowerCase();
     const allowed = Array.isArray(config.providers) ? config.providers : ["codex"];
     if (!allowed.includes(provider)) return result(`Provider “${provider}” is not enabled. Available: ${allowed.join(", ")}.`);
     const previous = `${providerLabel(state.provider)} (${state.model})`;
     const model = defaultModel(config, provider);
-    const reasoning = provider === "openrouter"
-      ? config.openRouterReasoning || "medium"
-      : config.codexReasoning || "medium";
+    const reasoning = defaultReasoning(config, provider);
     await persist({
       provider,
       model,
@@ -1850,21 +2053,57 @@ async function controlResult(config, key, state, input) {
       ...models.map((model) => `• ${model}`),
       `Current: ${state.model}`,
       "Switch: send /model <id>, /models <id>, or paste one listed vendor/model ID by itself.",
+      ...(state.provider === "openrouter"
+        ? ["Browse the live catalog: /models free, /models all, or /models search <text>."]
+        : []),
     ].join("\n"));
+  }
+  const catalogMatch = normalized.match(/^\/models\s+(free|all|search)(?:\s+(.+))?$/i);
+  if (catalogMatch && state.provider === "openrouter") {
+    const mode = catalogMatch[1].toLowerCase();
+    const argument = (catalogMatch[2] || "").trim();
+    const catalog = await loadCatalog(config, catalogFetch);
+    if (!catalog.models.length) {
+      return result("The live OpenRouter catalog is unavailable right now. Send /models for the configured list, or /model <vendor/model> to switch anyway.");
+    }
+    const staleNote = catalog.stale ? "\n(Showing the last cached catalog; OpenRouter could not be reached.)" : "";
+    if (mode === "free") {
+      const models = freeModels(catalog.models);
+      return result(`${formatModelPage(models, { title: "Free OpenRouter models", page: argument, moreCommand: "/models free" })}\nSwitch: /model <id>. Free models rotate and may have low rate limits; those marked "no tools" cannot use Grok tools natively.${staleNote}`);
+    }
+    if (mode === "search") {
+      if (!argument) return result("Send /models search <text> with a vendor or model name.");
+      const models = searchModels(catalog.models, argument);
+      if (!models.length) return result(`No OpenRouter model matches “${argument}”. Try /models all.`);
+      return result(`${formatModelPage(models, { title: `OpenRouter models matching “${argument}”`, moreCommand: `/models search ${argument}` })}${staleNote}`);
+    }
+    return result(`${formatModelPage(catalog.models, { title: "All OpenRouter models", page: argument, moreCommand: "/models all" })}\nSwitch: /model <id>.${staleNote}`);
   }
   const modelMatch = normalized.match(/^\/models?\s+(.+)$/i);
   if (modelMatch) {
     const requested = modelMatch[1].trim();
     const model = modelAliases(state.provider)[requested.toLowerCase()] || requested;
-    if (state.provider === "codex" && !configuredModels(config, "codex").includes(model)) {
-      return result(`Unknown Codex model “${requested}”. Use /models to see the supported models.`);
+    if (!providerSpec(state.provider).openIds && !configuredModels(config, state.provider).includes(model)) {
+      return result(`Unknown ${providerLabel(state.provider)} model “${requested}”. Use /models to see the supported models.`);
     }
-    if (state.provider === "openrouter" && !/^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._:+-]*$/i.test(model)) {
-      return result(`Invalid OpenRouter model ID “${requested}”. Use vendor/model format.`);
+    if (!validModelId(state.provider, model)) {
+      return result(state.provider === "openrouter"
+        ? `Invalid OpenRouter model ID “${requested}”. Use vendor/model format.`
+        : `Invalid ${providerLabel(state.provider)} model ID “${requested}”.`);
+    }
+    let note = "";
+    if (state.provider === "openrouter") {
+      const catalog = await loadCatalog(config, catalogFetch, { cacheOnly: true });
+      const entry = findCatalogModel(catalog.models, model);
+      if (catalog.models.length && !entry) {
+        note = " Note: this ID is not in the live OpenRouter catalog, so requests may fail until it exists.";
+      } else if (entry && !entry.tools) {
+        note = " Note: this model does not advertise native tool calling, so Grok tools will rely on text recovery.";
+      }
     }
     const previous = state.model;
     await persist({ model, threadId: null, threadEpoch: Number(state.threadEpoch || 0) + 1 });
-    const output = result(`Switched this bot from ${previous} to ${model} on ${providerLabel(state.provider)}. Its Grok transcript is preserved.`);
+    const output = result(`Switched this bot from ${previous} to ${model} on ${providerLabel(state.provider)}. Its Grok transcript is preserved.${note}`);
     output.model = model;
     return output;
   }
@@ -1927,6 +2166,19 @@ function rewriteHostToolCallIds(toolCalls) {
     ...call,
     toolCallId: `grokbot-router-tool-${randomUUID()}`,
   }));
+}
+
+async function runProvider(provider, turnConfig, messages, tools, dependencies) {
+  switch (provider) {
+    case "openrouter":
+      return runOpenRouter(turnConfig, messages, tools, dependencies.fetchImpl);
+    case "xai":
+      return runXai(turnConfig, messages, tools, dependencies.fetchImpl);
+    case "anthropic":
+      return runAnthropic(turnConfig, messages, tools, dependencies.anthropicQueryFactory);
+    default:
+      return runCodex(turnConfig, messages, tools, dependencies.codexFactory);
+  }
 }
 
 export async function runTurn(input, dependencies = {}) {
@@ -2005,7 +2257,7 @@ export async function runTurn(input, dependencies = {}) {
     || latestVisibleControl;
   const control = automationContinuation
     ? null
-    : await controlResult(config, key, state, controlText);
+    : await controlResult(config, key, state, controlText, dependencies.catalogFetch);
   if (control) {
     await rememberChannelControl(config);
     await appendAudit(config, {
@@ -2062,6 +2314,11 @@ export async function runTurn(input, dependencies = {}) {
     codexThreadId: state.threadId,
     openRouterModel: state.model,
     openRouterReasoning: state.reasoning,
+    anthropicModel: state.model,
+    anthropicReasoning: state.reasoning,
+    anthropicSessionId: state.threadId,
+    xaiModel: state.model,
+    xaiReasoning: state.reasoning,
     adapterSessionId: state.sessionId,
   };
   const threadEpoch = Number(state.threadEpoch || 0);
@@ -2089,9 +2346,7 @@ export async function runTurn(input, dependencies = {}) {
   });
   let result;
   try {
-    result = state.provider === "openrouter"
-      ? await runOpenRouter(turnConfig, messages, effectiveTools, dependencies.fetchImpl)
-      : await runCodex(turnConfig, messages, effectiveTools, dependencies.codexFactory);
+    result = await runProvider(state.provider, turnConfig, messages, effectiveTools, dependencies);
     if (result.emptyResponse) {
       const completion = latestAutomationCompletion(messages);
       if (automationContinuation && completion?.text) {
@@ -2104,7 +2359,7 @@ export async function runTurn(input, dependencies = {}) {
           emptyRecovery: "dynamic-task-wait",
         };
       } else {
-        throw new Error("OpenRouter returned an empty response after one retry");
+        throw new Error(`${providerLabel(state.provider)} returned an empty response after one retry`);
       }
     }
     result.toolCalls = rewriteHostToolCallIds(result.toolCalls);
@@ -2193,7 +2448,31 @@ export async function runTurn(input, dependencies = {}) {
   return { ok: true, provider: state.provider, ...publicResult };
 }
 
+async function loadRuntimeConfig() {
+  const pathname = process.env.GROKBOT_ROUTER_CONFIG || join(runtimeDirectory, "provider.json");
+  try {
+    return JSON.parse(await readFile(pathname, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+async function runAuthCommand() {
+  const config = await loadRuntimeConfig();
+  try {
+    if (process.argv.includes("--xai-login")) await xaiDeviceLogin(config);
+    else process.stdout.write(`${await xaiAuthStatus(config)}\n`);
+  } catch (error) {
+    process.stderr.write(`ERROR: ${redactDiagnostic(error?.message || error)}\n`);
+    process.exitCode = 1;
+  }
+}
+
 async function main() {
+  if (process.argv.includes("--xai-login") || process.argv.includes("--xai-status")) {
+    await runAuthCommand();
+    return;
+  }
   const input = JSON.parse(await readStdin());
   const result = await runTurn(input);
   process.stdout.write(JSON.stringify(result));

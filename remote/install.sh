@@ -8,11 +8,16 @@ INSTALL_PARENT="/home/box/sand-data"
 DEFAULT_PROVIDER="codex"
 CODEX_MODEL="gpt-5.6-sol"
 OPENROUTER_MODEL="anthropic/claude-sonnet-4.6"
+ANTHROPIC_MODEL="claude-sonnet-4-6"
+XAI_MODEL="grok-4.6"
 ENABLED_PROVIDERS="codex,openrouter"
+KNOWN_PROVIDERS="codex openrouter anthropic xai"
 PROVIDER_EXPLICIT=0
 PROVIDERS_EXPLICIT=0
 CODEX_MODEL_EXPLICIT=0
 OPENROUTER_MODEL_EXPLICIT=0
+ANTHROPIC_MODEL_EXPLICIT=0
+XAI_MODEL_EXPLICIT=0
 START_WATCHDOG=1
 GROK_SKILLS_ROOT="${ROUTER_GROK_SKILLS_ROOT:-/home/box/.grok/skills}"
 INSTALL_ATTEMPT="${ROUTER_INSTALL_ATTEMPT:-LOCAL}"
@@ -50,10 +55,12 @@ usage() {
     "GrokRouter installer ${ROUTER_VERSION}" \
     "" \
     "Usage: install.sh [options]" \
-    "  --provider codex|openrouter" \
-    "  --providers codex|openrouter|codex,openrouter" \
+    "  --provider codex|openrouter|anthropic|xai" \
+    "  --providers comma-separated subset of codex,openrouter,anthropic,xai" \
     "  --codex-model MODEL" \
     "  --openrouter-model vendor/model" \
+    "  --anthropic-model MODEL" \
+    "  --xai-model MODEL" \
     "  --install-root PATH          Development/testing only" \
     "  --no-restart                 Do not restart the Grok host"
 }
@@ -81,6 +88,16 @@ while [[ $# -gt 0 ]]; do
       OPENROUTER_MODEL_EXPLICIT=1
       shift 2
       ;;
+    --anthropic-model)
+      ANTHROPIC_MODEL="${2:?missing Anthropic model}"
+      ANTHROPIC_MODEL_EXPLICIT=1
+      shift 2
+      ;;
+    --xai-model)
+      XAI_MODEL="${2:?missing xAI model}"
+      XAI_MODEL_EXPLICIT=1
+      shift 2
+      ;;
     --install-root)
       INSTALL_ROOT="${2:?missing install root}"
       INSTALL_PARENT="$(dirname "$INSTALL_ROOT")"
@@ -102,15 +119,34 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$DEFAULT_PROVIDER" != "codex" && "$DEFAULT_PROVIDER" != "openrouter" ]]; then
-  fail_install "INVALID_PROVIDER" "--provider must be codex or openrouter"
+is_known_provider() {
+  local candidate
+  for candidate in $KNOWN_PROVIDERS; do
+    [[ "$1" == "$candidate" ]] && return 0
+  done
+  return 1
+}
+if ! is_known_provider "$DEFAULT_PROVIDER"; then
+  fail_install "INVALID_PROVIDER" "--provider must be one of: ${KNOWN_PROVIDERS// /, }"
 fi
 if [[ ! "$OPENROUTER_MODEL" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._:+-]+$ ]]; then
   fail_install "INVALID_OPENROUTER_MODEL" "--openrouter-model must use vendor/model format"
 fi
-if [[ "$ENABLED_PROVIDERS" != "codex" && "$ENABLED_PROVIDERS" != "openrouter" && "$ENABLED_PROVIDERS" != "codex,openrouter" && "$ENABLED_PROVIDERS" != "openrouter,codex" ]]; then
-  fail_install "INVALID_PROVIDERS" "--providers must be codex, openrouter, or codex,openrouter"
+if [[ ! "$ANTHROPIC_MODEL" =~ ^[A-Za-z0-9._:+-]+$ ]]; then
+  fail_install "INVALID_ANTHROPIC_MODEL" "--anthropic-model must be a plain model ID"
 fi
+if [[ ! "$XAI_MODEL" =~ ^[A-Za-z0-9._:+-]+$ ]]; then
+  fail_install "INVALID_XAI_MODEL" "--xai-model must be a plain model ID"
+fi
+if [[ -z "$ENABLED_PROVIDERS" ]]; then
+  fail_install "INVALID_PROVIDERS" "--providers must list at least one provider"
+fi
+IFS=',' read -r -a enabled_provider_list <<< "$ENABLED_PROVIDERS"
+for enabled_provider in "${enabled_provider_list[@]}"; do
+  if ! is_known_provider "$enabled_provider"; then
+    fail_install "INVALID_PROVIDERS" "--providers must be a comma-separated subset of: ${KNOWN_PROVIDERS// /, }"
+  fi
+done
 
 emit_phase "PREFLIGHT"
 for command_name in node npm python3 sha256sum; do
@@ -142,6 +178,8 @@ fi
 (cd "$PAYLOAD_ROOT" && sha256sum -c SHA256SUMS >/dev/null)
 for required in \
   "$PAYLOAD_ROOT/runtime/run-provider.mjs" \
+  "$PAYLOAD_ROOT/runtime/openrouter-catalog.mjs" \
+  "$PAYLOAD_ROOT/runtime/xai-oauth.mjs" \
   "$PAYLOAD_ROOT/runtime/package.json" \
   "$PAYLOAD_ROOT/runtime/package-lock.json" \
   "$PAYLOAD_ROOT/runtime/provider.default.json" \
@@ -167,6 +205,8 @@ done
 emit_phase "PREPARE_RUNTIME"
 printf '[2/6] Preparing isolated runtime\n'
 cp "$PAYLOAD_ROOT/runtime/run-provider.mjs" "$STAGE_ROOT/run-provider.mjs"
+cp "$PAYLOAD_ROOT/runtime/openrouter-catalog.mjs" "$STAGE_ROOT/openrouter-catalog.mjs"
+cp "$PAYLOAD_ROOT/runtime/xai-oauth.mjs" "$STAGE_ROOT/xai-oauth.mjs"
 cp "$PAYLOAD_ROOT/runtime/package.json" "$STAGE_ROOT/package.json"
 cp "$PAYLOAD_ROOT/runtime/package-lock.json" "$STAGE_ROOT/package-lock.json"
 cp "$PAYLOAD_ROOT/runtime/provider.default.json" "$STAGE_ROOT/provider.json"
@@ -200,6 +240,11 @@ ROUTER_CODEX_MODEL="$CODEX_MODEL" \
 ROUTER_CODEX_MODEL_EXPLICIT="$CODEX_MODEL_EXPLICIT" \
 ROUTER_OPENROUTER_MODEL="$OPENROUTER_MODEL" \
 ROUTER_OPENROUTER_MODEL_EXPLICIT="$OPENROUTER_MODEL_EXPLICIT" \
+ROUTER_ANTHROPIC_MODEL="$ANTHROPIC_MODEL" \
+ROUTER_ANTHROPIC_MODEL_EXPLICIT="$ANTHROPIC_MODEL_EXPLICIT" \
+ROUTER_XAI_MODEL="$XAI_MODEL" \
+ROUTER_XAI_MODEL_EXPLICIT="$XAI_MODEL_EXPLICIT" \
+ROUTER_KNOWN_PROVIDERS="$KNOWN_PROVIDERS" \
 python3 - <<'PY'
 import json
 import os
@@ -214,12 +259,13 @@ except Exception:
 defaults = json.loads(defaults_path.read_text())
 install_root = os.environ["ROUTER_INSTALL_ROOT"]
 provider = os.environ["ROUTER_PROVIDER"]
-if os.environ["ROUTER_PROVIDER_EXPLICIT"] != "1" and config.get("provider") in {"codex", "openrouter"}:
+known_providers = set(os.environ["ROUTER_KNOWN_PROVIDERS"].split())
+if os.environ["ROUTER_PROVIDER_EXPLICIT"] != "1" and config.get("provider") in known_providers:
     provider = config["provider"]
 providers = list(dict.fromkeys(os.environ["ROUTER_PROVIDERS"].split(",")))
 if os.environ["ROUTER_PROVIDERS_EXPLICIT"] != "1":
     existing = config.get("providers")
-    if isinstance(existing, list) and existing and all(item in {"codex", "openrouter"} for item in existing):
+    if isinstance(existing, list) and existing and all(item in known_providers for item in existing):
         providers = list(dict.fromkeys(existing))
 if provider not in providers:
     providers.insert(0, provider)
@@ -229,6 +275,12 @@ if os.environ["ROUTER_CODEX_MODEL_EXPLICIT"] != "1" and isinstance(config.get("c
 openrouter_model = os.environ["ROUTER_OPENROUTER_MODEL"]
 if os.environ["ROUTER_OPENROUTER_MODEL_EXPLICIT"] != "1" and isinstance(config.get("openRouterModel"), str):
     openrouter_model = config["openRouterModel"]
+anthropic_model = os.environ["ROUTER_ANTHROPIC_MODEL"]
+if os.environ["ROUTER_ANTHROPIC_MODEL_EXPLICIT"] != "1" and isinstance(config.get("anthropicModel"), str):
+    anthropic_model = config["anthropicModel"]
+xai_model = os.environ["ROUTER_XAI_MODEL"]
+if os.environ["ROUTER_XAI_MODEL_EXPLICIT"] != "1" and isinstance(config.get("xaiModel"), str):
+    xai_model = config["xaiModel"]
 config.update({
     "enabled": True,
     "autoRepair": True,
@@ -236,8 +288,14 @@ config.update({
     "providers": providers,
     "codexModel": codex_model,
     "openRouterModel": openrouter_model,
+    "anthropicModel": anthropic_model,
+    "xaiModel": xai_model,
     "codexModels": defaults.get("codexModels", []),
     "openRouterModels": defaults.get("openRouterModels", []),
+    "anthropicModels": defaults.get("anthropicModels", []),
+    "xaiModels": defaults.get("xaiModels", []),
+    "xaiSubscriptionModels": defaults.get("xaiSubscriptionModels", []),
+    "xaiBaseUrl": defaults.get("xaiBaseUrl", "https://api.x.ai/v1"),
     "runnerPath": f"{install_root}/run-provider.mjs",
     "nodePath": "/usr/bin/node",
     "statePath": f"{install_root}/conversation-states.json",
@@ -253,10 +311,13 @@ CODEX_MODEL="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["
 OPENROUTER_MODEL="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["openRouterModel"])' "$STAGE_ROOT/provider.json")"
 
 emit_phase "INSTALL_DEPENDENCIES"
-if [[ "$ENABLED_PROVIDERS" == *codex* ]]; then
+# Codex and Anthropic both ship as SDKs with a native CLI binary; OpenRouter and
+# xAI are plain HTTPS providers and need nothing beyond Node.
+if [[ "$ENABLED_PROVIDERS" == *codex* || "$ENABLED_PROVIDERS" == *anthropic* ]]; then
   dependencies_reused=0
+  native_platform="$(node -p 'process.platform + "-" + process.arch')"
   codex_native_package=""
-  case "$(node -p 'process.platform + "-" + process.arch')" in
+  case "$native_platform" in
     linux-x64) codex_native_package="codex-linux-x64" ;;
     linux-arm64) codex_native_package="codex-linux-arm64" ;;
     darwin-x64) codex_native_package="codex-darwin-x64" ;;
@@ -264,18 +325,21 @@ if [[ "$ENABLED_PROVIDERS" == *codex* ]]; then
     win32-x64) codex_native_package="codex-win32-x64" ;;
     win32-arm64) codex_native_package="codex-win32-arm64" ;;
   esac
+  anthropic_native_package="claude-agent-sdk-$native_platform"
   if [[ -f "$INSTALL_ROOT/package-lock.json" ]] \
     && cmp -s "$STAGE_ROOT/package-lock.json" "$INSTALL_ROOT/package-lock.json" \
     && [[ -f "$INSTALL_ROOT/node_modules/@openai/codex-sdk/dist/index.js" ]] \
     && [[ -x "$INSTALL_ROOT/node_modules/.bin/codex" ]] \
     && [[ -n "$codex_native_package" ]] \
-    && [[ -d "$INSTALL_ROOT/node_modules/@openai/$codex_native_package" ]]; then
-    printf '[3/6] Reusing the already verified pinned Codex runtime\n'
+    && [[ -d "$INSTALL_ROOT/node_modules/@openai/$codex_native_package" ]] \
+    && [[ -f "$INSTALL_ROOT/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs" ]] \
+    && [[ -d "$INSTALL_ROOT/node_modules/@anthropic-ai/$anthropic_native_package" ]]; then
+    printf '[3/6] Reusing the already verified pinned Codex and Claude Agent SDK runtime\n'
     cp -a "$INSTALL_ROOT/node_modules" "$STAGE_ROOT/node_modules"
     dependencies_reused=1
   fi
   if [[ "$dependencies_reused" == "0" ]]; then
-    printf '[3/6] Downloading the pinned Codex runtime (first install only)\n'
+    printf '[3/6] Downloading the pinned Codex and Claude Agent SDK runtime (first install only)\n'
     (cd "$STAGE_ROOT" && npm ci \
       --omit=dev \
       --ignore-scripts \
@@ -287,7 +351,7 @@ if [[ "$ENABLED_PROVIDERS" == *codex* ]]; then
       --fetch-timeout=30000)
   fi
 else
-  printf '[3/6] OpenRouter-only setup needs no dependency download\n'
+  printf '[3/6] OpenRouter/xAI-only setup needs no dependency download\n'
 fi
 
 emit_phase "ACTIVATE_RUNTIME"

@@ -20,6 +20,9 @@ const OPENROUTER_MODELS = new Set([
   "google/gemini-3.1-pro-preview",
   "google/gemini-3.1-flash-lite",
 ]);
+const ANTHROPIC_MODELS = new Set(["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5", "claude-fable-5-1"]);
+const XAI_MODELS = new Set(["grok-4.6", "grok-build-0.1", "grok-4.3", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning"]);
+const PROVIDER_IDS = new Set(["codex", "openrouter", "anthropic", "xai"]);
 
 let mainWindow = null;
 let busy = false;
@@ -643,15 +646,25 @@ async function updateNativeWorkflows(client, pageSession, operation = "sync") {
 
 function validatedInstallOptions(raw) {
   const providers = Array.isArray(raw.providers) ? [...new Set(raw.providers)] : [];
-  if (!providers.length || providers.some((item) => item !== "codex" && item !== "openrouter")) throw new Error("Choose Codex SDK, OpenRouter, or both.");
+  if (!providers.length || providers.some((item) => !PROVIDER_IDS.has(item))) throw new Error("Choose at least one of Codex SDK, OpenRouter, Anthropic, or xAI.");
   if (!providers.includes(raw.defaultProvider)) throw new Error("The default provider must be enabled.");
   if (!CODEX_MODELS.has(raw.codexModel)) throw new Error("Choose a packaged Codex model.");
   if (!OPENROUTER_MODELS.has(raw.openRouterModel)) throw new Error("Choose a packaged OpenRouter model.");
+  if (!ANTHROPIC_MODELS.has(raw.anthropicModel)) throw new Error("Choose a packaged Anthropic model.");
+  if (!XAI_MODELS.has(raw.xaiModel)) throw new Error("Choose a packaged xAI model.");
   const openRouterKey = typeof raw.openRouterKey === "string" ? raw.openRouterKey.trim() : "";
   if (openRouterKey && (!openRouterKey.startsWith("sk-or-v1-") || openRouterKey.length < 33 || /\s/.test(openRouterKey))) {
     throw new Error("The OpenRouter key does not have the expected shape.");
   }
-  return { defaultProvider: raw.defaultProvider, providers, codexModel: raw.codexModel, openRouterModel: raw.openRouterModel, openRouterKey };
+  return {
+    defaultProvider: raw.defaultProvider,
+    providers,
+    codexModel: raw.codexModel,
+    openRouterModel: raw.openRouterModel,
+    anthropicModel: raw.anthropicModel,
+    xaiModel: raw.xaiModel,
+    openRouterKey,
+  };
 }
 
 async function installRouter(executable, rawOptions) {
@@ -692,7 +705,7 @@ async function installRouter(executable, rawOptions) {
       "rm -rf /tmp/grokbot-router-installer/payload",
       "mkdir -p /tmp/grokbot-router-installer/payload",
       "tar -xzf /tmp/grokbot-router-installer/payload.tgz -C /tmp/grokbot-router-installer/payload --strip-components=1",
-      `if ROUTER_INSTALL_ATTEMPT=${installAttempt} bash /tmp/grokbot-router-installer/payload/remote/install.sh --provider ${options.defaultProvider} --providers ${options.providers.join(",")} --codex-model ${options.codexModel} --openrouter-model ${options.openRouterModel}; then clear; printf %s ${installPayload} | base64 -d; else code=$?; printf %s ${failurePayload} | base64 -d; echo $code; fi`,
+      `if ROUTER_INSTALL_ATTEMPT=${installAttempt} bash /tmp/grokbot-router-installer/payload/remote/install.sh --provider ${options.defaultProvider} --providers ${options.providers.join(",")} --codex-model ${options.codexModel} --openrouter-model ${options.openRouterModel} --anthropic-model ${options.anthropicModel} --xai-model ${options.xaiModel}; then clear; printf %s ${installPayload} | base64 -d; else code=$?; printf %s ${failurePayload} | base64 -d; echo $code; fi`,
     );
     log("Transferring a SHA-256-verified payload into the Bot computer…");
     const installVNC = await typeRemoteCommandsResilient(commands, client, pageSession);
@@ -703,7 +716,11 @@ async function installRouter(executable, rawOptions) {
     await updateNativeWorkflows(client, pageSession);
     await evaluate(client, pageSession, "window.desktop.forceGatewayReconnect().then(()=>true)").catch(() => {});
     if (options.defaultProvider === "openrouter") return "Installed with OpenRouter selected. Send /router doctor in Grok Bot.";
+    if (options.defaultProvider === "anthropic") return "Installed. Click Anthropic sign-in, then send /router doctor in Grok Bot.";
+    if (options.defaultProvider === "xai") return "Installed. Click xAI sign-in, then send /router doctor in Grok Bot.";
     if (options.providers.includes("codex")) return "Installed. Click Codex sign-in, then send /router doctor in Grok Bot.";
+    if (options.providers.includes("anthropic")) return "Installed. Click Anthropic sign-in, then send /router doctor in Grok Bot.";
+    if (options.providers.includes("xai")) return "Installed. Click xAI sign-in, then send /router doctor in Grok Bot.";
     return "Installed. Send /router doctor in Grok Bot to verify the selected model.";
   } finally {
     client.close();
@@ -712,6 +729,8 @@ async function installRouter(executable, rawOptions) {
 
 const REMOTE_ACTIONS = Object.freeze({
   auth: { command: "/home/box/.local/bin/grokbot-router auth codex", sentinel: "Welcome to Codex", message: "Codex sign-in is visible in the Bot terminal. Complete the displayed device flow." },
+  authAnthropic: { command: "/home/box/.local/bin/grokbot-router auth anthropic", sentinel: "Anthropic", message: "Anthropic sign-in is visible in the Bot terminal. Complete the displayed sign-in." },
+  authXai: { command: "/home/box/.local/bin/grokbot-router auth xai", sentinel: "xAI Grok sign-in", message: "xAI sign-in is visible in the Bot terminal. Open the shown link on any device and confirm the code." },
   doctor: { command: "/home/box/.local/bin/grokbot-router doctor", sentinel: "GROKBOT_ROUTER_DOCTOR_DONE", message: "Router Doctor completed in the Bot terminal." },
   repair: { command: "/home/box/.local/bin/grokbot-router repair", sentinel: "GROKBOT_ROUTER_REPAIR_OK", message: "Router repaired. Automatic repair is enabled. Send /provider in Grok Bot." },
   uninstall: { command: "/home/box/.local/bin/grokbot-router uninstall", sentinel: "GROKBOT_ROUTER_UNINSTALL_OK", message: "Restore command sent. Grok Bot will reconnect to its stock host." },
