@@ -30,7 +30,7 @@ LEGACY_BACKUPS = (
     Path("/home/box/sand-host/host-main.cjs.grokbot-router.stock"),
     Path("/home/box/sand-host/host-main.cjs.grok-sdk-adapter.prepatch"),
 )
-DEFAULT_MANIFEST = Path(__file__).with_name("manifests") / "0.30.0.json"
+DEFAULT_MANIFEST = Path(__file__).with_name("manifests")
 # Another public router also rewrites the same host. Its marker must never be
 # mistaken for a stock host, so structural verification refuses it outright.
 FOREIGN_MARKER = re.compile(r"opengrok|open_grok", re.IGNORECASE)
@@ -357,7 +357,60 @@ def load_manifest(path: Path) -> dict[str, Any]:
     return manifest
 
 
-def load_host_registry(path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+def _version_key(manifest: dict[str, Any]) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", str(manifest.get("grokBotVersion", "0"))))
+
+
+def _matches_manifest(path: Path, manifest: dict[str, Any]) -> tuple[bool, bool]:
+    """Return (exact stock hash match, every anchor exactly once) for ``path``."""
+    if not path.exists():
+        return (False, False)
+    exact = is_allowed_stock(path, manifest)
+    try:
+        source = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return (exact, False)
+    anchors = all(source.count(anchor) == 1 for anchor in manifest["requiredAnchors"])
+    return (exact, anchors)
+
+
+def resolve_manifest(path: Path, host: Path, backup: Path | None = None) -> dict[str, Any]:
+    """Load one manifest file, or select the right one from a directory.
+
+    Each supported Grok Bot version has its own manifest. Selection prefers an
+    exact stock-hash match on the live host or its backup, then a host whose
+    required anchors all appear exactly once (a patched host keeps its anchors),
+    newest version first. Nothing is ever loosened: the chosen manifest still
+    applies its own exact hash, anchor, marker, and size gates.
+    """
+    if path.is_file():
+        return load_manifest(path)
+    if not path.is_dir():
+        raise PatchError(f"Cannot read compatibility manifest {path}: not found")
+    manifests = []
+    for candidate in sorted(path.glob("*.json")):
+        try:
+            manifests.append(load_manifest(candidate))
+        except PatchError:
+            continue
+    if not manifests:
+        raise PatchError(f"No compatibility manifest found in {path}")
+    manifests.sort(key=_version_key, reverse=True)
+    targets = [target for target in (host, backup) if target is not None]
+    for manifest in manifests:
+        if any(_matches_manifest(target, manifest)[0] for target in targets):
+            return manifest
+    for manifest in manifests:
+        if any(_matches_manifest(target, manifest)[1] for target in targets):
+            return manifest
+    return manifests[0]
+
+
+def load_host_registry(
+    path: Path,
+    manifest: dict[str, Any],
+    optional_version: bool = False,
+) -> dict[str, Any] | None:
     try:
         registry = json.loads(path.read_text())
     except Exception as error:
@@ -365,6 +418,10 @@ def load_host_registry(path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
     if registry.get("schemaVersion") != 1:
         raise PatchError("Signed host registry has an unsupported schemaVersion")
     if registry.get("grokBotVersion") != manifest.get("grokBotVersion"):
+        # A registry for another supported version adds nothing to this
+        # host's exact list; the manifest's own gates still apply in full.
+        if optional_version:
+            return None
         raise PatchError("Signed host registry targets a different Grok Bot version")
     registry["stockHosts"] = validate_stock_hosts(
         registry.get("stockHosts"), "Signed host registry"
@@ -595,7 +652,10 @@ def patch_text(source: str) -> str:
 
     session_pattern = re.compile(
         r"(createSession\(onRequestId, sessionOptions\) \{\n\s+)"
-        r"(const mockResponse = process\.env\.SAND_AGENT_MOCK_RESPONSE;)"
+        # Grok Bot 0.30.0 read the mock response from the environment; 0.44.0
+        # reads it from the executor options. Both sit on the first line of
+        # the same session factory, which is the seam the router hooks.
+        r"(const mockResponse = (?:process\.env\.SAND_AGENT_MOCK_RESPONSE|options2\.agentMockResponse);)"
     )
     source, session_count = session_pattern.subn(
         lambda match: f"{match.group(1)}{SESSION_CODE.lstrip()}\n\n      {match.group(2)}",
@@ -818,8 +878,10 @@ def main() -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    manifest = load_manifest(args.manifest)
-    registry = load_host_registry(args.host_registry, manifest) if args.host_registry else None
+    manifest = resolve_manifest(args.manifest, args.host, args.backup)
+    registry = None
+    if args.host_registry:
+        registry = load_host_registry(args.host_registry, manifest, optional_version=True)
     if args.doctor:
         result = doctor(args.host, args.backup, manifest, args.allow_unknown_host, registry)
     elif args.inspect:

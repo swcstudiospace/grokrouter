@@ -12,7 +12,7 @@ done
 INSTALL_ROOT="$(cd -P "$(dirname "$SCRIPT_SOURCE")/.." && pwd)"
 CONFIG_PATH="$INSTALL_ROOT/provider.json"
 PATCHER="$INSTALL_ROOT/patch/router_patch.py"
-MANIFEST="$INSTALL_ROOT/patch/manifests/0.30.0.json"
+MANIFEST="${ROUTER_PATCH_MANIFEST:-$INSTALL_ROOT/patch/manifests}"
 HOST_REGISTRY_TOOL="$INSTALL_ROOT/bin/host-registry"
 HOST="${ROUTER_PATCH_HOST:-/home/box/sand-host/host-main.cjs}"
 BACKUP="${ROUTER_PATCH_BACKUP:-/home/box/sand-data/grokbot-router-backup/host-main.cjs.stock}"

@@ -12,13 +12,13 @@
 
 <p align="center">
   <img alt="Experimental project" src="https://img.shields.io/badge/status-experimental-ff6b2c?style=flat-square">
-  <img alt="Grok Bot 0.30.0 only" src="https://img.shields.io/badge/Grok_Bot-0.30.0_only-171717?style=flat-square">
+  <img alt="Grok Bot 0.30.0 and 0.44.0" src="https://img.shields.io/badge/Grok_Bot-0.30.0_%7C_0.44.0-171717?style=flat-square">
   <img alt="macOS Apple silicon" src="https://img.shields.io/badge/macOS-Apple_silicon-111111?style=flat-square&logo=apple">
   <img alt="Windows x64 and Arm64 source preview" src="https://img.shields.io/badge/Windows-x64_%7C_Arm64_preview-0078d4?style=flat-square&logo=windows11">
 </p>
 
 > [!IMPORTANT]
-> GrokRouter is an experimental, unofficial, reversible project for **Grok Bot 0.30.0 only**. If GrokRouter reports an unsupported or changed version, stop. Never force it past that check.
+> GrokRouter is an experimental, unofficial, reversible project for **Grok Bot 0.30.0 and 0.44.0 only**. If GrokRouter reports an unsupported or changed version, stop. Never force it past that check.
 
 ## What does it do?
 
@@ -50,7 +50,7 @@ flowchart LR
 Continue only if every answer is **yes**:
 
 - **Mac:** You have an Apple-silicon Mac—M1, M2, M3, M4, or newer—running macOS 12 or later.
-- **Grok Bot:** The official **Grok Bot 0.30.0** app is inside your Mac's main `Applications` folder.
+- **Grok Bot:** The official **Grok Bot 0.30.0 or 0.44.0** app is inside your Mac's main `Applications` folder.
 - **Bot computer:** You can select a Bot in Grok Bot and click **Open computer**.
 - **Model access:** You have at least one of: a Codex account, an OpenRouter API key beginning with `sk-or-v1-` (free models exist, so a key with no credit still works), a Claude Pro/Max subscription, or a SuperGrok or X Premium+ subscription.
 
@@ -139,7 +139,7 @@ From now on, stay inside Grok Bot. You do not need to keep GrokRouter open.
 | You previously installed OpenGrok or another router | Do not install one router on top of another. First create a genuinely new Bot and manually run `/router doctor` and `/provider`; if both identify GrokRouter beta.46 and your selected model, stop because it is already working. Otherwise use GrokRouter's **Restore Stock Grok Bot** and continue only if it confirms a verified restore. Never force, hand-edit, or copy a cloud-host backup. |
 | Apple Command Line Tools are required | Finish Apple's installation, then repeat whichever installation path you used. |
 | macOS will not open the command | Control-click **Install GrokRouter.command**, choose **Open**, then confirm **Open**. Do not disable Gatekeeper. |
-| `install Grok Bot 0.30.0 in Applications first` | Put the official app at `/Applications/Grok Bot.app`, open it once, then retry. |
+| `install Grok Bot 0.30.0 or 0.44.0 in Applications first` | Put the official app at `/Applications/Grok Bot.app`, open it once, then retry. |
 | Unsupported or changed Grok Bot version | Stop. Do not force the installation or change the version/hash checks. |
 | GrokRouter asks for a Bot computer | In Grok Bot, select any Bot and click **Open computer**. Leave it open while the installer continues. |
 | `Action needed` appears | Follow the large instruction in GrokRouter. It continues automatically after the Bot computer is available. |

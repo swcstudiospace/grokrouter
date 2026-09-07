@@ -34,7 +34,7 @@ GROK_SKILLS_ROOT="${ROUTER_GROK_SKILLS_ROOT:-/home/box/.grok/skills}"
 PATCH_ARGS=(
   --host "${ROUTER_PATCH_HOST:-/home/box/sand-host/host-main.cjs}"
   --backup "${ROUTER_PATCH_BACKUP:-/home/box/sand-data/grokbot-router-backup/host-main.cjs.stock}"
-  --manifest "${ROUTER_PATCH_MANIFEST:-$INSTALL_ROOT/patch/manifests/0.30.0.json}"
+  --manifest "${ROUTER_PATCH_MANIFEST:-$INSTALL_ROOT/patch/manifests}"
 )
 if [[ "${ROUTER_ALLOW_UNKNOWN_HOST:-0}" == "1" ]]; then
   PATCH_ARGS+=(--allow-unknown-host)

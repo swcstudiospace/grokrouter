@@ -1,6 +1,6 @@
 # Coding-agent guide
 
-This repository is an unofficial, reversible model router for the official Grok Bot 0.30.0 desktop app. Keep the stock Grok interface, computer, tools, and orchestration layer intact; change only the version-gated inference seam.
+This repository is an unofficial, reversible model router for the official Grok Bot 0.30.0 and 0.44.0 desktop apps. Each supported version has its own manifest in `patch/manifests/`; add a version only from a real host probe (`scripts/host-probe.py`), never by guessing anchors. Keep the stock Grok interface, computer, tools, and orchestration layer intact; change only the version-gated inference seam.
 
 ## Cold start
 

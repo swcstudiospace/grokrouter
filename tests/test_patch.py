@@ -263,3 +263,77 @@ class RouterPatchTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MultiVersionManifestTests(unittest.TestCase):
+    """Grok Bot 0.44.0 reads the mock response from the executor options."""
+
+    NEW_SOURCE = STOCK_SOURCE.replace(
+        "const mockResponse = process.env.SAND_AGENT_MOCK_RESPONSE;",
+        "const mockResponse = options2.agentMockResponse;",
+    )
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        root = Path(self.temporary.name)
+        self.manifests = root / "manifests"
+        self.manifests.mkdir()
+        self.old_host = root / "old-host.cjs"
+        self.old_host.write_text(STOCK_SOURCE)
+        self.new_host = root / "new-host.cjs"
+        self.new_host.write_text(self.NEW_SOURCE)
+        self.backup = root / "backup.stock"
+        for version, host, mock_anchor in (
+            ("0.30.0", self.old_host, "const mockResponse = process.env.SAND_AGENT_MOCK_RESPONSE;"),
+            ("0.44.0", self.new_host, "const mockResponse = options2.agentMockResponse;"),
+        ):
+            digest = hashlib.sha256(host.read_bytes()).hexdigest()
+            (self.manifests / f"{version}.json").write_text(json.dumps({
+                "grokBotVersion": version,
+                "stockHosts": [{"sha256": digest, "bytes": host.stat().st_size}],
+                "requiredAnchors": [
+                    "function createMockPromptExecutor(options2)",
+                    "createSession(onRequestId, sessionOptions)",
+                    mock_anchor,
+                    "const mainSessionOptions = {",
+                ],
+            }))
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def test_directory_selects_the_manifest_matching_each_host(self):
+        self.assertEqual(router_patch.resolve_manifest(self.manifests, self.old_host)["grokBotVersion"], "0.30.0")
+        self.assertEqual(router_patch.resolve_manifest(self.manifests, self.new_host)["grokBotVersion"], "0.44.0")
+        single = router_patch.resolve_manifest(self.manifests / "0.30.0.json", self.new_host)
+        self.assertEqual(single["grokBotVersion"], "0.30.0")
+
+    def test_new_mock_anchor_installs_doctors_and_restores(self):
+        manifest = router_patch.resolve_manifest(self.manifests, self.new_host)
+        router_patch.install(self.new_host, self.backup, manifest, dry_run=False, allow_unknown=False)
+        patched = self.new_host.read_text()
+        self.assertIn("GROKBOT_MODEL_ROUTER_V45", patched)
+        self.assertIn("const mockResponse = options2.agentMockResponse;", patched)
+        self.assertEqual(patched.count("createSession(onRequestId, sessionOptions)"), 1)
+        # A patched host still resolves to its own manifest, so doctor, the
+        # watchdog, and restore keep using the same gates after install.
+        self.assertEqual(router_patch.resolve_manifest(self.manifests, self.new_host, self.backup)["grokBotVersion"], "0.44.0")
+        self.assertTrue(router_patch.doctor(self.new_host, self.backup, manifest)["ok"])
+        router_patch.restore(self.new_host, self.backup, manifest, dry_run=False, allow_unknown=False)
+        self.assertEqual(self.new_host.read_text(), self.NEW_SOURCE)
+
+    def test_shipped_manifests_cover_both_supported_versions(self):
+        shipped = PROJECT_ROOT / "patch" / "manifests"
+        versions = sorted(router_patch.load_manifest(path)["grokBotVersion"] for path in shipped.glob("*.json"))
+        self.assertEqual(versions, ["0.30.0", "0.44.0"])
+        new = router_patch.load_manifest(shipped / "0.44.0.json")
+        self.assertIn("const mockResponse = options2.agentMockResponse;", new["requiredAnchors"])
+        self.assertEqual(new["stockHosts"][0]["bytes"], 28264284)
+
+    def test_registry_for_another_version_is_ignored_when_optional(self):
+        manifest = router_patch.resolve_manifest(self.manifests, self.new_host)
+        registry_path = Path(self.temporary.name) / "registry.json"
+        registry_path.write_text(json.dumps({"schemaVersion": 1, "grokBotVersion": "0.30.0", "stockHosts": []}))
+        self.assertIsNone(router_patch.load_host_registry(registry_path, manifest, optional_version=True))
+        with self.assertRaises(router_patch.PatchError):
+            router_patch.load_host_registry(registry_path, manifest)

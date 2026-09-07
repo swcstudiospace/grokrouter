@@ -89,6 +89,18 @@ def main() -> int:
             if len(identity_context) >= 3:
                 break
     report["sessionOptionsContext"] = identity_context
+    # The identity hook references `boxId` and `rawTranscriptText`, which the
+    # 0.30.0 host defines shortly before `mainSessionOptions`. Report only the
+    # nearby lines that mention them so scope can be confirmed for a new build.
+    scope_lines = []
+    for index, line in enumerate(lines):
+        if "const mainSessionOptions = {" in line:
+            window = lines[max(0, index - 120):index]
+            for offset, text in enumerate(window):
+                if re.search(r"\b(boxId|rawTranscriptText|resolveBoxId|transcriptText)\b", text):
+                    scope_lines.append({"line": index - len(window) + offset + 1, "text": text.strip()[:MAX_CHARS]})
+            break
+    report["identityScope"] = scope_lines[-12:]
     print("GROKROUTER_HOST_PROBE_BEGIN")
     print(json.dumps(report, indent=2))
     print("GROKROUTER_HOST_PROBE_END")

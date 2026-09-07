@@ -185,6 +185,7 @@ for required in \
   "$PAYLOAD_ROOT/runtime/provider.default.json" \
   "$PAYLOAD_ROOT/patch/router_patch.py" \
   "$PAYLOAD_ROOT/patch/manifests/0.30.0.json" \
+  "$PAYLOAD_ROOT/patch/manifests/0.44.0.json" \
   "$PAYLOAD_ROOT/compatibility/0.30.0-hosts.json" \
   "$PAYLOAD_ROOT/compatibility/0.30.0-hosts.json.sig" \
   "$PAYLOAD_ROOT/compatibility/registry-public-key.pem" \
@@ -212,7 +213,7 @@ cp "$PAYLOAD_ROOT/runtime/package-lock.json" "$STAGE_ROOT/package-lock.json"
 cp "$PAYLOAD_ROOT/runtime/provider.default.json" "$STAGE_ROOT/provider.json"
 mkdir -p "$STAGE_ROOT/patch/manifests" "$STAGE_ROOT/bin" "$STAGE_ROOT/skills" "$STAGE_ROOT/compatibility"
 cp "$PAYLOAD_ROOT/patch/router_patch.py" "$STAGE_ROOT/patch/router_patch.py"
-cp "$PAYLOAD_ROOT/patch/manifests/0.30.0.json" "$STAGE_ROOT/patch/manifests/0.30.0.json"
+cp "$PAYLOAD_ROOT"/patch/manifests/*.json "$STAGE_ROOT/patch/manifests/"
 cp "$PAYLOAD_ROOT/compatibility/0.30.0-hosts.json" "$STAGE_ROOT/compatibility/0.30.0-hosts.json"
 cp "$PAYLOAD_ROOT/compatibility/0.30.0-hosts.json.sig" "$STAGE_ROOT/compatibility/0.30.0-hosts.json.sig"
 cp "$PAYLOAD_ROOT/compatibility/registry-public-key.pem" "$STAGE_ROOT/compatibility/registry-public-key.pem"
@@ -376,7 +377,7 @@ emit_phase "APPLY_ADAPTER"
 printf '[5/6] Applying version-gated host adapter\n'
 PATCH_HOST="${ROUTER_PATCH_HOST:-/home/box/sand-host/host-main.cjs}"
 PATCH_BACKUP="${ROUTER_PATCH_BACKUP:-/home/box/sand-data/grokbot-router-backup/host-main.cjs.stock}"
-PATCH_MANIFEST="${ROUTER_PATCH_MANIFEST:-$INSTALL_ROOT/patch/manifests/0.30.0.json}"
+PATCH_MANIFEST="${ROUTER_PATCH_MANIFEST:-$INSTALL_ROOT/patch/manifests}"
 PATCH_ARGS=(
   --host "$PATCH_HOST"
   --backup "$PATCH_BACKUP"

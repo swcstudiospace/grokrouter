@@ -9,7 +9,8 @@ const WebSocket = require("ws");
 const { createWorker } = require("tesseract.js");
 
 const execFileAsync = promisify(execFile);
-const SUPPORTED_GROK_VERSION = "0.30.0";
+const SUPPORTED_GROK_VERSIONS = Object.freeze(["0.30.0", "0.44.0"]);
+const SUPPORTED_GROK_VERSION = SUPPORTED_GROK_VERSIONS.join(" or ");
 const CDP_PORT = 19222;
 const CODEX_MODELS = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
 const OPENROUTER_MODELS = new Set([
@@ -256,7 +257,7 @@ async function locateAndValidateGrok() {
   }
   if (metadata.Status !== "Valid") throw new Error("The installed Grok Bot executable does not have a valid Windows signature. Nothing was changed.");
   const version = String(metadata.Version || "").trim();
-  if (version !== SUPPORTED_GROK_VERSION && version !== `${SUPPORTED_GROK_VERSION}.0`) {
+  if (!SUPPORTED_GROK_VERSIONS.some((supported) => version === supported || version === `${supported}.0`)) {
     throw new Error(`Grok Bot ${version || "unknown"} is not supported. This beta is pinned to ${SUPPORTED_GROK_VERSION} and will not patch an unknown build.`);
   }
   return executable;

@@ -3,7 +3,8 @@ import CryptoKit
 import Foundation
 import Vision
 
-private let supportedGrokVersion = "0.30.0"
+private let supportedGrokVersions = ["0.30.0", "0.44.0"]
+private let supportedGrokVersion = supportedGrokVersions.joined(separator: " or ")
 private let grokBundleIdentifier = "com.anysphere.sand"
 private let grokAppPath = "/Applications/Grok Bot.app"
 private let cdpPort = 19222
@@ -227,7 +228,7 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
         iconView.widthAnchor.constraint(equalToConstant: 88).isActive = true
         iconView.heightAnchor.constraint(equalToConstant: 88).isActive = true
 
-        let eyebrow = NSTextField(labelWithString: "GROK BOT 0.30.0")
+        let eyebrow = NSTextField(labelWithString: "GROK BOT 0.30.0 · 0.44.0")
         eyebrow.font = .monospacedSystemFont(ofSize: 11, weight: .semibold)
         eyebrow.textColor = NSColor(calibratedRed: 1.0, green: 0.48, blue: 0.12, alpha: 1)
         let title = NSTextField(labelWithString: "Bring your own model.")
@@ -401,7 +402,7 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
         logView.textColor = NSColor(calibratedWhite: 0.76, alpha: 1)
         logView.backgroundColor = NSColor(calibratedRed: 0.035, green: 0.038, blue: 0.041, alpha: 1)
         logView.textContainerInset = NSSize(width: 12, height: 10)
-        logView.string = "The installer will verify Grok Bot 0.30.0, create a stock backup, install the pinned runtime, and test the result.\n"
+        logView.string = "The installer will verify Grok Bot \(supportedGrokVersion), create a stock backup, install the pinned runtime, and test the result.\n"
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.borderType = .noBorder
@@ -790,7 +791,7 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
             throw InstallerError.message("Install the official Grok Bot app in /Applications first.")
         }
         let version = info["CFBundleShortVersionString"] as? String ?? "unknown"
-        guard version == supportedGrokVersion else {
+        guard supportedGrokVersions.contains(version) else {
             throw InstallerError.message("Grok Bot \(version) is not supported. This beta is pinned to \(supportedGrokVersion) and will not patch an unknown build.")
         }
     }
