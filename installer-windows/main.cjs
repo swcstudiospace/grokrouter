@@ -12,17 +12,10 @@ const execFileAsync = promisify(execFile);
 const SUPPORTED_GROK_VERSIONS = Object.freeze(["0.30.0", "0.44.0"]);
 const SUPPORTED_GROK_VERSION = SUPPORTED_GROK_VERSIONS.join(" or ");
 const CDP_PORT = 19222;
-const CODEX_MODELS = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
-const OPENROUTER_MODELS = new Set([
-  "anthropic/claude-sonnet-4.6",
-  "openai/gpt-5.6-sol",
-  "openai/gpt-5.6-terra",
-  "openai/gpt-5.6-luna",
-  "google/gemini-3.1-pro-preview",
-  "google/gemini-3.1-flash-lite",
-]);
-const ANTHROPIC_MODELS = new Set(["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5", "claude-fable-5-1"]);
-const XAI_MODELS = new Set(["grok-4.6", "grok-build-0.1", "grok-4.3", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning"]);
+const CODEX_MODELS = new Set(["gpt-6-astra", "gpt-6-astra-pro", "gpt-5.6-sol", "gpt-5.6-sol-pro", "gpt-5.6-terra", "gpt-5.6-luna"]);
+const OPENROUTER_MODELS = new Set(["anthropic/claude-sonnet-5", "anthropic/claude-opus-5", "anthropic/claude-fable-5.1", "anthropic/claude-haiku-4.5", "openai/gpt-6-astra", "openai/gpt-5.6-luna", "x-ai/grok-4.6", "google/gemini-3.8-flash", "moonshotai/kimi-k3", "deepseek/deepseek-v4-pro", "openrouter/free"]);
+const ANTHROPIC_MODELS = new Set(["claude-sonnet-5", "claude-opus-5", "claude-haiku-4-5", "claude-fable-5-1"]);
+const XAI_MODELS = new Set(["grok-4.6", "grok-4.5", "grok-4.3", "grok-build-0.1", "grok-4.20", "grok-4.20-multi-agent"]);
 const PROVIDER_IDS = new Set(["codex", "openrouter", "anthropic", "xai"]);
 
 let mainWindow = null;

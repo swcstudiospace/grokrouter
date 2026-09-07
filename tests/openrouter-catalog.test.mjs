@@ -48,7 +48,7 @@ test("parses the public catalog and marks free and tool-capable models", () => {
 test("formats a bounded page with a continuation hint", () => {
   const models = parseCatalog(payload);
   const text = formatModelPage(models, { title: "All OpenRouter models", page: 1, pageSize: 2, moreCommand: "/models all" });
-  assert.match(text, /^All OpenRouter models \(5 models, page 1\/3\):/);
+  assert.match(text, /^All OpenRouter models:\nShowing 2 of 5 \(page 1\/3\)\./);
   assert.match(text, /• anthropic\/claude-sonnet-4.6 — tools, 1M ctx/);
   assert.match(text, /• google\/gemma-4-31b-it:free — free, no tools, 131k ctx/);
   assert.match(text, /More: send \/models all 2$/);

@@ -16,6 +16,7 @@ python3 -m py_compile "$PROJECT_ROOT/patch/router_patch.py"
 node --check "$PROJECT_ROOT/runtime/run-provider.mjs"
 node --check "$PROJECT_ROOT/runtime/openrouter-catalog.mjs"
 node --check "$PROJECT_ROOT/runtime/xai-oauth.mjs"
+node --check "$PROJECT_ROOT/runtime/model-catalog.mjs"
 node --check "$PROJECT_ROOT/remote/verify-host-registry.mjs"
 node --check "$PROJECT_ROOT/scripts/sign-host-registry.mjs"
 node "$PROJECT_ROOT/remote/verify-host-registry.mjs" \
@@ -336,7 +337,7 @@ import sys
 
 config = json.load(open(sys.argv[1]))
 assert config["providers"] == ["xai", "openrouter"], config["providers"]
-assert config["anthropicModel"] == "claude-sonnet-4-6"
+assert config["anthropicModel"] == "claude-sonnet-5"
 assert "grok-4.6" in config["xaiModels"]
 assert config["xaiBaseUrl"] == "https://api.x.ai/v1"
 PY
@@ -388,21 +389,20 @@ ln -s "$TEST_RUNTIME/skills/provider" "$TEST_GROK_SKILLS/provider"
 mkdir "$TEST_GROK_SKILLS/reasoning"
 printf 'user-owned\n' > "$TEST_GROK_SKILLS/reasoning/KEEP"
 "$TEST_BIN/grokbot-router" status | grep -q 'Default provider: codex'
-python3 - "$TEST_RUNTIME/provider.json" <<'PY'
+python3 - "$TEST_RUNTIME/provider.json" "$PROJECT_ROOT/runtime/provider.default.json" <<'PY'
 import json
 import sys
 
 config = json.load(open(sys.argv[1]))
 assert "openai/gpt-5.2" not in config["openRouterModels"]
 assert "legacy/removed-model" not in config["openRouterModels"]
-assert config["openRouterModels"] == [
-    "anthropic/claude-sonnet-4.6",
-    "openai/gpt-5.6-sol",
-    "openai/gpt-5.6-terra",
-    "openai/gpt-5.6-luna",
-    "google/gemini-3.1-pro-preview",
-    "google/gemini-3.1-flash-lite",
-]
+# The packaged catalog moves as vendors ship models; assert against the shipped
+# defaults so a stale user list is always replaced by the current one.
+defaults = json.load(open(sys.argv[2]))
+assert config["openRouterModels"] == defaults["openRouterModels"], config["openRouterModels"]
+assert config["anthropicModels"] == defaults["anthropicModels"]
+assert config["xaiModels"] == defaults["xaiModels"]
+assert config["codexModels"] == defaults["codexModels"]
 PY
 python3 - "$TEST_RUNTIME/provider.json" <<'PY'
 import json

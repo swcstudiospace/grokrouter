@@ -269,8 +269,8 @@ SESSION_CODE = r'''
       if (grokBotRouterConfig) {
         const routerDefaults = {
           codex: grokBotRouterConfig.codexModel || "gpt-5.6-sol",
-          openrouter: grokBotRouterConfig.openRouterModel || "anthropic/claude-sonnet-4.6",
-          anthropic: grokBotRouterConfig.anthropicModel || "claude-sonnet-4-6",
+          openrouter: grokBotRouterConfig.openRouterModel || "anthropic/claude-sonnet-5",
+          anthropic: grokBotRouterConfig.anthropicModel || "claude-sonnet-5",
           xai: grokBotRouterConfig.xaiModel || "grok-4.6"
         };
         const provider = Object.prototype.hasOwnProperty.call(routerDefaults, grokBotRouterConfig.provider)

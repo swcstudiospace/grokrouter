@@ -261,27 +261,40 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
         xaiCheckbox.action = #selector(providerSelectionChanged)
 
         defaultProviderPopup.addItems(withTitles: ["Codex SDK", "OpenRouter", "Anthropic", "xAI"])
-        codexModelPopup.addItems(withTitles: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"])
+        codexModelPopup.addItems(withTitles: [
+            "gpt-6-astra",
+            "gpt-6-astra-pro",
+            "gpt-5.6-sol",
+            "gpt-5.6-sol-pro",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna"
+        ])
         openRouterModelPopup.addItems(withTitles: [
-            "anthropic/claude-sonnet-4.6",
-            "openai/gpt-5.6-sol",
-            "openai/gpt-5.6-terra",
+            "anthropic/claude-sonnet-5",
+            "anthropic/claude-opus-5",
+            "anthropic/claude-fable-5.1",
+            "anthropic/claude-haiku-4.5",
+            "openai/gpt-6-astra",
             "openai/gpt-5.6-luna",
-            "google/gemini-3.1-pro-preview",
-            "google/gemini-3.1-flash-lite"
+            "x-ai/grok-4.6",
+            "google/gemini-3.8-flash",
+            "moonshotai/kimi-k3",
+            "deepseek/deepseek-v4-pro",
+            "openrouter/free"
         ])
         anthropicModelPopup.addItems(withTitles: [
-            "claude-sonnet-4-6",
-            "claude-opus-4-6",
+            "claude-sonnet-5",
+            "claude-opus-5",
             "claude-haiku-4-5",
             "claude-fable-5-1"
         ])
         xaiModelPopup.addItems(withTitles: [
             "grok-4.6",
-            "grok-build-0.1",
+            "grok-4.5",
             "grok-4.3",
-            "grok-4.20-0309-reasoning",
-            "grok-4.20-0309-non-reasoning"
+            "grok-build-0.1",
+            "grok-4.20",
+            "grok-4.20-multi-agent"
         ])
         openRouterKeyField.placeholderString = "OpenRouter API key (stored only in Grok Bot Secrets)"
 
@@ -684,8 +697,8 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
             xai ? "xai" : nil
         ].compactMap { $0 }.joined(separator: ",")
         let codexModel = codexModelPopup.titleOfSelectedItem ?? "gpt-5.6-sol"
-        let openRouterModel = openRouterModelPopup.titleOfSelectedItem ?? "anthropic/claude-sonnet-4.6"
-        let anthropicModel = anthropicModelPopup.titleOfSelectedItem ?? "claude-sonnet-4-6"
+        let openRouterModel = openRouterModelPopup.titleOfSelectedItem ?? "anthropic/claude-sonnet-5"
+        let anthropicModel = anthropicModelPopup.titleOfSelectedItem ?? "claude-sonnet-5"
         let xaiModel = xaiModelPopup.titleOfSelectedItem ?? "grok-4.6"
         let key = openRouterKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if openRouter && !key.isEmpty && !isValidOpenRouterKey(key) {

@@ -72,7 +72,12 @@ export function formatModelPage(models, { title, page = 1, pageSize = PAGE_SIZE,
   const current = Math.min(Math.max(1, Number(page) || 1), pages);
   const start = (current - 1) * pageSize;
   const slice = models.slice(start, start + pageSize);
-  const lines = [`${title} (${models.length} models, page ${current}/${pages}):`, ...slice.map(formatModelLine)];
+  // The first line keeps a stable `<title>:` shape so callers can match it.
+  const lines = [
+    `${title}:`,
+    `Showing ${slice.length} of ${models.length} (page ${current}/${pages}).`,
+    ...slice.map(formatModelLine),
+  ];
   if (current < pages && moreCommand) lines.push(`More: send ${moreCommand} ${current + 1}`);
   return lines.join("\n");
 }

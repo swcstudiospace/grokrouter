@@ -7,9 +7,9 @@ import {
   findModel as findCatalogModel,
   formatModelPage,
   freeModels,
-  loadCatalog,
   searchModels,
 } from "./openrouter-catalog.mjs";
+import { loadProviderModels, xaiSubscriptionModelIds } from "./model-catalog.mjs";
 import {
   XAI_API_BASE_URL,
   XAI_SUBSCRIPTION_BASE_URL,
@@ -1038,15 +1038,15 @@ export async function runOpenRouter(config, messages, tools, fetchImpl = fetch) 
   const apiKey = await persistedOpenRouterKey(config);
   return runOpenAICompatible(config, messages, tools, fetchImpl, {
     label: "OpenRouter",
-    model: config.openRouterModel || "anthropic/claude-sonnet-4.6",
+    model: config.openRouterModel || "anthropic/claude-sonnet-5",
     reasoning: config.openRouterReasoning || "medium",
     baseUrl: String(config.openRouterBaseUrl || "https://openrouter.ai/api/v1").replace(/\/$/, ""),
     bearer: async () => apiKey,
   });
 }
 
-function xaiBaseUrl(config, model) {
-  const subscriptionModels = Array.isArray(config.xaiSubscriptionModels) ? config.xaiSubscriptionModels : [];
+async function xaiBaseUrl(config, model) {
+  const subscriptionModels = await xaiSubscriptionModelIds(config).catch(() => []);
   if (subscriptionModels.includes(model)) return config.xaiSubscriptionBaseUrl || XAI_SUBSCRIPTION_BASE_URL;
   return String(config.xaiBaseUrl || XAI_API_BASE_URL).replace(/\/$/, "");
 }
@@ -1058,7 +1058,7 @@ export async function runXai(config, messages, tools, fetchImpl = fetch) {
     label: "xAI",
     model,
     reasoning: config.xaiReasoning || "medium",
-    baseUrl: xaiBaseUrl(config, model),
+    baseUrl: await xaiBaseUrl(config, model),
     guardUrl: assertXaiBearerOrigin,
     bearer: async ({ retryAfterUnauthorized = false } = {}) => {
       if (retryAfterUnauthorized && !refreshed) {
@@ -1388,7 +1388,7 @@ function codexThreadOptions(config) {
 const ANTHROPIC_EFFORT = { minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "xhigh" };
 
 function anthropicPrompt(config, messages, tools, resuming) {
-  return codexPrompt({ ...config, codexModel: config.anthropicModel || "claude-sonnet-4-6" }, messages, tools, resuming)
+  return codexPrompt({ ...config, codexModel: config.anthropicModel || "claude-sonnet-5" }, messages, tools, resuming)
     .replace("the active provider is Codex SDK", "the active provider is Anthropic (Claude Agent SDK)")
     .replace("Use Codex's native shell, file editing, and web tools", "Use Claude Code's native shell, file editing, and web tools");
 }
@@ -1406,7 +1406,7 @@ async function createAnthropicQuery() {
  */
 export async function runAnthropic(config, messages, tools, queryFactory = null) {
   const query = queryFactory ? queryFactory() : await createAnthropicQuery();
-  const model = config.anthropicModel || "claude-sonnet-4-6";
+  const model = config.anthropicModel || "claude-sonnet-5";
   const resuming = Boolean(config.anthropicSessionId);
   const prompt = anthropicPrompt(config, messages, tools, resuming);
   const images = await codexImages(messages, config);
@@ -1860,20 +1860,26 @@ export const PROVIDERS = {
     reasoningKey: "codexReasoning",
     fallbackModel: "gpt-5.6-sol",
     signIn: "grokbot-router auth codex",
-    aliases: { sol: "gpt-5.6-sol", terra: "gpt-5.6-terra", luna: "gpt-5.6-luna", "gpt-5.6": "gpt-5.6-sol" },
-    openIds: false,
+    aliases: { astra: "gpt-6-astra", pro: "gpt-6-astra-pro", sol: "gpt-5.6-sol", terra: "gpt-5.6-terra", luna: "gpt-5.6-luna", "gpt-5.6": "gpt-5.6-sol" },
+    openIds: true,
   },
   openrouter: {
     label: "OpenRouter",
     modelKey: "openRouterModel",
     modelsKey: "openRouterModels",
     reasoningKey: "openRouterReasoning",
-    fallbackModel: "anthropic/claude-sonnet-4.6",
+    fallbackModel: "anthropic/claude-sonnet-5",
     signIn: "paste an OpenRouter key in the GrokRouter installer",
     aliases: {
-      claude: "anthropic/claude-sonnet-4.6",
-      sonnet: "anthropic/claude-sonnet-4.6",
-      gemini: "google/gemini-3.1-pro-preview",
+      claude: "anthropic/claude-sonnet-5",
+      sonnet: "anthropic/claude-sonnet-5",
+      opus: "anthropic/claude-opus-5",
+      haiku: "anthropic/claude-haiku-4.5",
+      fable: "anthropic/claude-fable-5.1",
+      gpt: "openai/gpt-6-astra",
+      astra: "openai/gpt-6-astra",
+      gemini: "google/gemini-3.8-flash",
+      grok: "x-ai/grok-4.6",
       sol: "openai/gpt-5.6-sol",
       terra: "openai/gpt-5.6-terra",
       luna: "openai/gpt-5.6-luna",
@@ -1886,9 +1892,9 @@ export const PROVIDERS = {
     modelKey: "anthropicModel",
     modelsKey: "anthropicModels",
     reasoningKey: "anthropicReasoning",
-    fallbackModel: "claude-sonnet-4-6",
+    fallbackModel: "claude-sonnet-5",
     signIn: "grokbot-router auth anthropic",
-    aliases: { fable: "claude-fable-5-1", opus: "claude-opus-4-6", sonnet: "claude-sonnet-4-6", haiku: "claude-haiku-4-5" },
+    aliases: { fable: "claude-fable-5-1", opus: "claude-opus-5", sonnet: "claude-sonnet-5", haiku: "claude-haiku-4-5" },
     openIds: true,
   },
   xai: {
@@ -1898,7 +1904,7 @@ export const PROVIDERS = {
     reasoningKey: "xaiReasoning",
     fallbackModel: "grok-4.6",
     signIn: "grokbot-router auth xai",
-    aliases: { grok: "grok-4.6", build: "grok-build-0.1" },
+    aliases: { grok: "grok-4.6", build: "grok-build-0.1", fast: "grok-4.5", multi: "grok-4.20-multi-agent" },
     openIds: true,
   },
 };
@@ -1979,7 +1985,7 @@ async function doctorText(config, state) {
   return checks.join("\n");
 }
 
-async function controlResult(config, key, state, input, catalogFetch = fetch) {
+async function controlResult(config, key, state, input, catalogDependencies = {}) {
   const normalized = input.trim().replace(/\s+/g, " ");
   const command = normalized.toLowerCase();
   const persist = async (patch) => {
@@ -2046,38 +2052,61 @@ async function controlResult(config, key, state, input, catalogFetch = fetch) {
     return output;
   }
   if (command === "/model") return result(`${providerLabel(state.provider)} model: ${state.model}. Reasoning: ${state.reasoning}.`);
-  if (command === "/models") {
-    const models = configuredModels(config, state.provider);
-    return result([
-      `${providerLabel(state.provider)} models:`,
-      ...models.map((model) => `• ${model}`),
-      `Current: ${state.model}`,
-      "Switch: send /model <id>, /models <id>, or paste one listed vendor/model ID by itself.",
-      ...(state.provider === "openrouter"
-        ? ["Browse the live catalog: /models free, /models all, or /models search <text>."]
-        : []),
-    ].join("\n"));
-  }
-  const catalogMatch = normalized.match(/^\/models\s+(free|all|search)(?:\s+(.+))?$/i);
-  if (catalogMatch && state.provider === "openrouter") {
-    const mode = catalogMatch[1].toLowerCase();
-    const argument = (catalogMatch[2] || "").trim();
-    const catalog = await loadCatalog(config, catalogFetch);
-    if (!catalog.models.length) {
-      return result("The live OpenRouter catalog is unavailable right now. Send /models for the configured list, or /model <vendor/model> to switch anyway.");
+  const catalogMatch = normalized.match(/^\/models\s+(free|all|search|refresh)(?:\s+(.+))?$/i);
+  if (command === "/models" || catalogMatch) {
+    const mode = catalogMatch ? catalogMatch[1].toLowerCase() : "list";
+    const argument = catalogMatch ? (catalogMatch[2] || "").trim() : "";
+    const label = providerLabel(state.provider);
+    if (mode === "free" && state.provider !== "openrouter") {
+      return result(`Free models are an OpenRouter feature. Send /provider openrouter first, then /models free.`);
     }
-    const staleNote = catalog.stale ? "\n(Showing the last cached catalog; OpenRouter could not be reached.)" : "";
+    const catalog = await loadProviderModels(state.provider, config, catalogDependencies, {
+      force: mode === "refresh",
+    });
+    const footer = [
+      `Current: ${state.model}. Reasoning: ${state.reasoning}.`,
+      state.provider === "openrouter"
+        ? "Switch: send /model <id>, /models <id>, or paste one listed vendor/model ID by itself."
+        : "Switch: send /model <id>, /models <id>, or paste one listed ID by itself.",
+      state.provider === "openrouter"
+        ? "Also: /models free, /models all, /models search <text>, /models refresh."
+        : "Also: /models all, /models search <text>, /models refresh.",
+    ];
+    if (!catalog.models.length) {
+      return result([
+        `${label} models: the live list is unavailable right now.`,
+        catalog.error ? `Reason: ${redactDiagnostic(catalog.error, 160)}` : "",
+        `Switch anyway with /model <id>.`,
+      ].filter(Boolean).join("\n"));
+    }
+    const staleNote = catalog.stale
+      ? `\n(Showing the last known list; ${label} could not be reached.)`
+      : "";
     if (mode === "free") {
       const models = freeModels(catalog.models);
-      return result(`${formatModelPage(models, { title: "Free OpenRouter models", page: argument, moreCommand: "/models free" })}\nSwitch: /model <id>. Free models rotate and may have low rate limits; those marked "no tools" cannot use Grok tools natively.${staleNote}`);
+      if (!models.length) return result("No free models are listed in the current OpenRouter catalog.");
+      return result([
+        formatModelPage(models, { title: "Free OpenRouter models", page: argument, moreCommand: "/models free" }),
+        'Free models rotate and may have low rate limits; those marked "no tools" cannot use Grok tools natively.',
+        ...footer,
+      ].join("\n") + staleNote);
     }
     if (mode === "search") {
       if (!argument) return result("Send /models search <text> with a vendor or model name.");
       const models = searchModels(catalog.models, argument);
-      if (!models.length) return result(`No OpenRouter model matches “${argument}”. Try /models all.`);
-      return result(`${formatModelPage(models, { title: `OpenRouter models matching “${argument}”`, moreCommand: `/models search ${argument}` })}${staleNote}`);
+      if (!models.length) return result(`No ${label} model matches “${argument}”. Try /models all.`);
+      return result([
+        formatModelPage(models, { title: `${label} models matching “${argument}”`, moreCommand: `/models search ${argument}` }),
+        ...footer,
+      ].join("\n") + staleNote);
     }
-    return result(`${formatModelPage(catalog.models, { title: "All OpenRouter models", page: argument, moreCommand: "/models all" })}\nSwitch: /model <id>.${staleNote}`);
+    // A bare /models shows the first page of the same live list, so no model
+    // is hidden behind a packaged shortlist.
+    const page = mode === "all" ? argument : "1";
+    return result([
+      formatModelPage(catalog.models, { title: `${label} models`, page, moreCommand: "/models all" }),
+      ...footer,
+    ].join("\n") + staleNote);
   }
   const modelMatch = normalized.match(/^\/models?\s+(.+)$/i);
   if (modelMatch) {
@@ -2092,14 +2121,12 @@ async function controlResult(config, key, state, input, catalogFetch = fetch) {
         : `Invalid ${providerLabel(state.provider)} model ID “${requested}”.`);
     }
     let note = "";
-    if (state.provider === "openrouter") {
-      const catalog = await loadCatalog(config, catalogFetch, { cacheOnly: true });
-      const entry = findCatalogModel(catalog.models, model);
-      if (catalog.models.length && !entry) {
-        note = " Note: this ID is not in the live OpenRouter catalog, so requests may fail until it exists.";
-      } else if (entry && !entry.tools) {
-        note = " Note: this model does not advertise native tool calling, so Grok tools will rely on text recovery.";
-      }
+    const catalog = await loadProviderModels(state.provider, config, catalogDependencies, { cacheOnly: true });
+    const entry = findCatalogModel(catalog.models, model);
+    if (catalog.models.length && !entry) {
+      note = ` Note: this ID is not in the known ${providerLabel(state.provider)} model list, so requests may fail until it exists. Send /models refresh to update the list.`;
+    } else if (entry && entry.tools === false) {
+      note = " Note: this model does not advertise native tool calling, so Grok tools will rely on text recovery.";
     }
     const previous = state.model;
     await persist({ model, threadId: null, threadEpoch: Number(state.threadEpoch || 0) + 1 });
@@ -2257,7 +2284,7 @@ export async function runTurn(input, dependencies = {}) {
     || latestVisibleControl;
   const control = automationContinuation
     ? null
-    : await controlResult(config, key, state, controlText, dependencies.catalogFetch);
+    : await controlResult(config, key, state, controlText, dependencies);
   if (control) {
     await rememberChannelControl(config);
     await appendAudit(config, {

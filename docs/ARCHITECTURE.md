@@ -76,6 +76,17 @@ The Anthropic provider drives `@anthropic-ai/claude-agent-sdk`, which spawns its
 
 `runtime/xai-oauth.mjs` implements the RFC 8628 device flow against `auth.x.ai` with xAI's public desktop client. Credentials are written with mode 0600 beside the runtime, refreshed 60 seconds before expiry, and quarantined on `invalid_grant` so the user is told to sign in again instead of the router retrying forever. The request path reuses the OpenRouter bridge as an OpenAI-compatible transport with `reasoning_effort`, one refresh-and-retry on 401, and an origin guard that refuses to send the bearer anywhere but `api.x.ai` or `cli-chat-proxy.grok.com`.
 
+## Live model catalogs
+
+`runtime/model-catalog.mjs` discovers each provider's real model list instead of trusting a packaged shortlist, so `/models` never hides a model a vendor has shipped:
+
+- **OpenRouter** uses the public `GET /api/v1/models`, which needs no credential.
+- **xAI** reads `GET /v1/models` on both `api.x.ai` and the subscription proxy with the OAuth bearer, merges them, and marks which models the subscription quota serves. `runXai` then routes a quota model to the proxy automatically.
+- **Anthropic** reads the Claude Agent SDK's `supportedModels()` over its control channel. The query is opened with an empty streaming prompt and closed immediately, so listing models never starts or bills a turn.
+- **Codex** has no list endpoint, so its packaged shortlist is a guide; any model ID is accepted.
+
+Each list is cached for an hour with owner-only permissions, falls back to the last cached copy and then to the packaged list, and is refreshed on demand with `/models refresh`. Switching models reads only the cache, so `/model <id>` stays fast and works offline; an unknown ID produces a note rather than a refusal.
+
 ## OpenRouter catalog
 
 `/models free`, `/models all`, and `/models search` read the public `GET /api/v1/models` list, which needs no credential. The runtime caches it for an hour with mode 0600, falls back to the cached copy when OpenRouter is unreachable, and never blocks `/model <id>`: switching consults only the cache, so an unlisted or tool-less model produces a note rather than a refusal.

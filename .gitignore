@@ -14,3 +14,4 @@ handoff/
 __pycache__/
 runtime/openrouter-catalog.json
 runtime/xai-oauth.json
+runtime/model-catalog.*.json

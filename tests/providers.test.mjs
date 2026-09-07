@@ -42,21 +42,26 @@ test("OpenRouter model commands browse the live catalog and warn about unlisted 
     fetchImpl: async () => { throw new Error("control reached inference"); },
   });
   try {
-    const pinned = await send("/models");
-    assert.match(pinned.text, /OpenRouter models:/);
-    assert.match(pinned.text, /\/models free/);
-    assert.equal(catalogRequests, 0);
+    const listed = await send("/models");
+    assert.match(listed.text, /^OpenRouter models:\nShowing 3 of 3 \(page 1\/1\)\./);
+    assert.match(listed.text, /minimax\/minimax-m3:free/);
+    assert.match(listed.text, /\/models free/);
+    assert.equal(catalogRequests, 1, "a bare /models uses the live catalog");
 
     const free = await send("/models free");
-    assert.match(free.text, /Free OpenRouter models \(2 models, page 1\/1\):/);
+    assert.match(free.text, /^Free OpenRouter models:\nShowing 2 of 2 \(page 1\/1\)\./);
     assert.match(free.text, /• google\/gemma-4-31b-it:free — free, no tools, 131k ctx/);
     assert.match(free.text, /• minimax\/minimax-m3:free — free, tools, 200k ctx/);
-    assert.doesNotMatch(free.text, /gpt-6-astra/);
+    assert.doesNotMatch(free.text.split("Current:")[0], /gpt-6-astra/, "paid models stay out of the free listing");
     assert.equal(catalogRequests, 1);
 
     const all = await send("/models all");
-    assert.match(all.text, /All OpenRouter models \(3 models/);
+    assert.match(all.text, /^OpenRouter models:\nShowing 3 of 3/);
     assert.equal(catalogRequests, 1, "the catalog is cached between controls");
+
+    const refreshed = await send("/models refresh");
+    assert.match(refreshed.text, /OpenRouter models:/);
+    assert.equal(catalogRequests, 2, "/models refresh bypasses the cache");
 
     const search = await send("/models search gemma");
     assert.match(search.text, /matching “gemma”/);
@@ -71,13 +76,13 @@ test("OpenRouter model commands browse the live catalog and warn about unlisted 
 
     const unlisted = await send("/model vendor/brand-new-model");
     assert.equal(unlisted.model, "vendor/brand-new-model");
-    assert.match(unlisted.text, /not in the live OpenRouter catalog/);
+    assert.match(unlisted.text, /not in the known OpenRouter model list/);
 
     const alias = await send("/model free");
     assert.equal(alias.model, "openrouter/free");
 
-    const listed = await send("/model minimax/minimax-m3:free");
-    assert.doesNotMatch(listed.text, /Note:/);
+    const known = await send("/model minimax/minimax-m3:free");
+    assert.doesNotMatch(known.text, /Note:/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -96,7 +101,7 @@ test("catalog outages degrade to a clear message without breaking controls", asy
     const offline = await runTurn({ config, messages: [user("/models free")], sessionOptions: { botId: "outage-bot" } }, {
       catalogFetch: async () => { throw new Error("offline"); },
     });
-    assert.match(offline.text, /live OpenRouter catalog is unavailable/);
+    assert.match(offline.text, /the live list is unavailable right now/);
     const switched = await runTurn({ config, messages: [user("/model vendor/some-model")], sessionOptions: { botId: "outage-bot" } }, {
       catalogFetch: async () => { throw new Error("offline"); },
     });
@@ -112,8 +117,8 @@ test("Bots can switch to the Anthropic and xAI providers with their own defaults
   const config = {
     provider: "codex",
     providers: ["codex", "openrouter", "anthropic", "xai"],
-    anthropicModel: "claude-sonnet-4-6",
-    anthropicModels: ["claude-opus-4-6", "claude-sonnet-4-6"],
+    anthropicModel: "claude-sonnet-5",
+    anthropicModels: ["claude-opus-5", "claude-sonnet-5"],
     xaiModel: "grok-4.6",
     xaiModels: ["grok-4.6", "grok-build-0.1"],
     xaiReasoning: "high",
@@ -125,14 +130,14 @@ test("Bots can switch to the Anthropic and xAI providers with their own defaults
   try {
     const anthropic = await send("/provider anthropic");
     assert.equal(anthropic.provider, "anthropic");
-    assert.equal(anthropic.model, "claude-sonnet-4-6");
-    assert.match(anthropic.text, /to Anthropic \(claude-sonnet-4-6\)/);
+    assert.equal(anthropic.model, "claude-sonnet-5");
+    assert.match(anthropic.text, /to Anthropic \(claude-sonnet-5\)/);
     const models = await send("/models");
     assert.match(models.text, /Anthropic models:/);
-    assert.match(models.text, /claude-opus-4-6/);
+    assert.match(models.text, /claude-opus-5/);
     assert.doesNotMatch(models.text, /\/models free/);
     const opus = await send("/model opus");
-    assert.equal(opus.model, "claude-opus-4-6");
+    assert.equal(opus.model, "claude-opus-5");
     const bad = await send("/model not valid!");
     assert.match(bad.text, /Invalid Anthropic model ID/);
 
@@ -220,18 +225,18 @@ test("Anthropic runs through the Claude Agent SDK, resumes a session, and return
     toolCalls: [{ toolCallId: "call-1", toolName: "Computer", argumentsJson: "{\"action\":\"screenshot\"}" }],
   });
   const result = await runAnthropic(
-    { anthropicModel: "claude-sonnet-4-6", anthropicReasoning: "xhigh", anthropicSessionId: "resume-me", tempDirectory: tmpdir(), workingDirectory: "/workspace" },
+    { anthropicModel: "claude-sonnet-5", anthropicReasoning: "xhigh", anthropicSessionId: "resume-me", tempDirectory: tmpdir(), workingDirectory: "/workspace" },
     [user("Take a screenshot")],
     [{ name: "Computer", inputSchema: { type: "object" } }],
     () => makeQuery(structured),
   );
   assert.equal(calls[0].options.resume, "resume-me");
-  assert.equal(calls[0].options.model, "claude-sonnet-4-6");
+  assert.equal(calls[0].options.model, "claude-sonnet-5");
   assert.equal(calls[0].options.effort, "xhigh");
   assert.equal(calls[0].options.cwd, "/workspace");
   assert.equal(calls[0].options.permissionMode, "bypassPermissions");
   assert.match(calls[0].prompt, /active provider is Anthropic \(Claude Agent SDK\)/);
-  assert.match(calls[0].prompt, /active model is claude-sonnet-4-6/);
+  assert.match(calls[0].prompt, /active model is claude-sonnet-5/);
   assert.equal(result.threadId, "claude-session-9");
   assert.equal(result.toolCalls[0].toolName, "Computer");
   assert.equal(result.usage.inputTokens, 20);

@@ -10,7 +10,7 @@
   ],
   "codexModel": "gpt-5.6-sol",
   "codexReasoning": "medium",
-  "openRouterModel": "anthropic/claude-sonnet-4.6",
+  "openRouterModel": "anthropic/claude-sonnet-5",
   "openRouterReasoning": "medium",
   "workingDirectory": "/workspace",
   "sandboxMode": "workspace-write",
@@ -18,17 +18,25 @@
   "webSearchMode": "live",
   "approvalPolicy": "never",
   "codexModels": [
+    "gpt-6-astra",
+    "gpt-6-astra-pro",
     "gpt-5.6-sol",
+    "gpt-5.6-sol-pro",
     "gpt-5.6-terra",
     "gpt-5.6-luna"
   ],
   "openRouterModels": [
-    "anthropic/claude-sonnet-4.6",
-    "openai/gpt-5.6-sol",
-    "openai/gpt-5.6-terra",
+    "anthropic/claude-sonnet-5",
+    "anthropic/claude-opus-5",
+    "anthropic/claude-fable-5.1",
+    "anthropic/claude-haiku-4.5",
+    "openai/gpt-6-astra",
     "openai/gpt-5.6-luna",
-    "google/gemini-3.1-pro-preview",
-    "google/gemini-3.1-flash-lite"
+    "x-ai/grok-4.6",
+    "google/gemini-3.8-flash",
+    "moonshotai/kimi-k3",
+    "deepseek/deepseek-v4-pro",
+    "openrouter/free"
   ],
   "timeoutMs": 900000,
   "runnerPath": "/home/box/sand-data/grokbot-router/run-provider.mjs",
@@ -36,22 +44,23 @@
   "statePath": "/home/box/sand-data/grokbot-router/conversation-states.json",
   "auditPath": "/home/box/sand-data/grokbot-router/audit.jsonl",
   "openRouterBaseUrl": "https://openrouter.ai/api/v1",
-  "anthropicModel": "claude-sonnet-4-6",
+  "anthropicModel": "claude-sonnet-5",
   "anthropicReasoning": "medium",
   "xaiModel": "grok-4.6",
   "xaiReasoning": "medium",
   "anthropicModels": [
-    "claude-sonnet-4-6",
-    "claude-opus-4-6",
+    "claude-sonnet-5",
+    "claude-opus-5",
     "claude-haiku-4-5",
     "claude-fable-5-1"
   ],
   "xaiModels": [
     "grok-4.6",
-    "grok-build-0.1",
+    "grok-4.5",
     "grok-4.3",
-    "grok-4.20-0309-reasoning",
-    "grok-4.20-0309-non-reasoning"
+    "grok-build-0.1",
+    "grok-4.20",
+    "grok-4.20-multi-agent"
   ],
   "xaiSubscriptionModels": [],
   "xaiBaseUrl": "https://api.x.ai/v1"

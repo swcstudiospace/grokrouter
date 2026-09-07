@@ -7,8 +7,8 @@ INSTALL_ROOT="/home/box/sand-data/grokbot-router"
 INSTALL_PARENT="/home/box/sand-data"
 DEFAULT_PROVIDER="codex"
 CODEX_MODEL="gpt-5.6-sol"
-OPENROUTER_MODEL="anthropic/claude-sonnet-4.6"
-ANTHROPIC_MODEL="claude-sonnet-4-6"
+OPENROUTER_MODEL="anthropic/claude-sonnet-5"
+ANTHROPIC_MODEL="claude-sonnet-5"
 XAI_MODEL="grok-4.6"
 ENABLED_PROVIDERS="codex,openrouter"
 KNOWN_PROVIDERS="codex openrouter anthropic xai"
@@ -180,6 +180,7 @@ for required in \
   "$PAYLOAD_ROOT/runtime/run-provider.mjs" \
   "$PAYLOAD_ROOT/runtime/openrouter-catalog.mjs" \
   "$PAYLOAD_ROOT/runtime/xai-oauth.mjs" \
+  "$PAYLOAD_ROOT/runtime/model-catalog.mjs" \
   "$PAYLOAD_ROOT/runtime/package.json" \
   "$PAYLOAD_ROOT/runtime/package-lock.json" \
   "$PAYLOAD_ROOT/runtime/provider.default.json" \
@@ -208,6 +209,7 @@ printf '[2/6] Preparing isolated runtime\n'
 cp "$PAYLOAD_ROOT/runtime/run-provider.mjs" "$STAGE_ROOT/run-provider.mjs"
 cp "$PAYLOAD_ROOT/runtime/openrouter-catalog.mjs" "$STAGE_ROOT/openrouter-catalog.mjs"
 cp "$PAYLOAD_ROOT/runtime/xai-oauth.mjs" "$STAGE_ROOT/xai-oauth.mjs"
+cp "$PAYLOAD_ROOT/runtime/model-catalog.mjs" "$STAGE_ROOT/model-catalog.mjs"
 cp "$PAYLOAD_ROOT/runtime/package.json" "$STAGE_ROOT/package.json"
 cp "$PAYLOAD_ROOT/runtime/package-lock.json" "$STAGE_ROOT/package-lock.json"
 cp "$PAYLOAD_ROOT/runtime/provider.default.json" "$STAGE_ROOT/provider.json"

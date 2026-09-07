@@ -224,7 +224,8 @@ Type these into a Bot's normal Grok chat box:
 | --- | --- |
 | `/models` | Show the models you can use. |
 | `/models free` | List the free OpenRouter models from the live catalog. |
-| `/models search <text>` | Search every OpenRouter model. |
+| `/models search <text>` | Search every model your provider offers. |
+| `/models refresh` | Re-read the provider's model list right now. |
 | Paste a listed `vendor/model` ID | Switch this Bot to that model. |
 | `/provider` | Show which provider and model this Bot is using. |
 | `/reasoning low\|medium\|high\|xhigh` | Change Codex thinking effort. |
@@ -444,10 +445,11 @@ Type these into Grok Bot's normal composer. The installer publishes user-invocab
 | `/provider openrouter` | Switch this Bot to OpenRouter |
 | `/provider anthropic` | Switch this Bot to Anthropic through the Claude Agent SDK |
 | `/provider xai` | Switch this Bot to xAI (Grok subscription sign-in) |
-| `/models` | Show the configured model catalog |
+| `/models` | Show the provider's live model list, first page |
 | `/models free` | List free OpenRouter models from the live public catalog |
-| `/models all [page]` | Page through every OpenRouter model |
-| `/models search <text>` | Search the OpenRouter catalog by vendor or model name |
+| `/models all [page]` | Page through every model the provider offers |
+| `/models search <text>` | Search the live list by vendor or model name |
+| `/models refresh` | Force a fresh read of the provider's model list |
 | `/model free` | Select OpenRouter's rotating `openrouter/free` router |
 | `/model opus` | Select the Anthropic `claude-opus-4-6` alias |
 | `/model grok-build-0.1` | Select a specific xAI model |
@@ -482,6 +484,7 @@ Invalid or near-miss model controls return bounded help instead of becoming mode
 | Patch engine | `patch/router_patch.py` | Original transformation, syntax check, atomic activation, verified backup, dry run, and restore |
 | Provider runtime | `runtime/run-provider.mjs` | Controls, stable Bot identity, per-Bot state, replay protection, Codex/OpenRouter/Anthropic/xAI adapters, tool conversion, and redacted audit |
 | OpenRouter catalog | `runtime/openrouter-catalog.mjs` | Fetches and caches the public model list for `/models free`, `/models all`, and `/models search` |
+| Live model catalog | `runtime/model-catalog.mjs` | Per-provider model discovery: OpenRouter's public list, xAI's authenticated list, and the Claude Agent SDK's own model list, each cached for an hour |
 | xAI sign-in | `runtime/xai-oauth.mjs` | Device-code sign-in, owner-only token storage, refresh, and an origin guard that keeps the bearer on xAI hosts |
 | Provider defaults | `runtime/provider.default.json` | Packaged provider/model catalog and installer defaults—never credentials |
 | Automated tests | `tests/` | Runtime behavior, patch/restore, payload integrity, and native installer contracts |
