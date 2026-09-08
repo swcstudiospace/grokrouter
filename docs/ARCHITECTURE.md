@@ -85,8 +85,10 @@ Every failed turn is classified into a short stable code before it reaches the u
 Three guardrails remove common failure classes before they reach the user:
 
 - A 429 or 5xx is retried exactly once, honouring `Retry-After` up to five seconds.
-- A 400 that names one of the optional request fields is retried once with only the fields every OpenAI-compatible endpoint accepts.
+- A 400 is retried once without the optional request fields the provider named, or without all of them when it named none. Field names are matched across camelCase and snake_case, because xAI answers with `does not support parameter reasoningEffort` for a field sent as `reasoning_effort`. An attributed field is remembered per model in `provider-quirks.json`, so the next turn sends one request instead of failing and retrying.
 - A model the catalog marks as having no native tool support is never sent tool schemas.
+
+`grokbot-router probe xai` sends the smallest possible request in six shapes against both xAI hosts and reports which the account accepts, so a rejected shape is identified from evidence rather than guessed at. It prints no credential.
 
 Each guardrail records what it did in the audit (`droppedOptionalKeys`, `toolSupportDowngrade`) so a silent downgrade stays visible.
 

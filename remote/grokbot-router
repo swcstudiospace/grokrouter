@@ -137,6 +137,7 @@ usage() {
     "  restart                        Restart Grok Bot's host process" \
     "  uninstall                      Restore the verified stock host" \
     "  errors [count]                 Explain the most recent router failures" \
+    "  probe xai                      Report which request shapes xAI accepts" \
     "  logs                           Show redacted recent audit events"
 }
 
@@ -427,6 +428,14 @@ PY
     printf 'The runtime and stock backup were retained for recovery.\n'
     nohup sh -c "sleep 3; pkill -f '/home/box/sand-host/host-main.cjs' >/dev/null 2>&1 || true" \
       >/dev/null 2>&1 &
+    ;;
+  probe)
+    require_config
+    if [[ "${2:-}" != "xai" ]]; then
+      printf 'ERROR: supported probe command is: grokbot-router probe xai\n' >&2
+      exit 2
+    fi
+    GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" node "$PROVIDER_RUNNER" --xai-probe
     ;;
   errors)
     require_config

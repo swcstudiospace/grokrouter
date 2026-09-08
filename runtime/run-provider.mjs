@@ -447,7 +447,70 @@ function redactDiagnostic(value, limit = 500) {
 }
 
 const TRANSIENT_RETRY_CAP_MS = 5_000;
-const OPTIONAL_REQUEST_KEYS = ["reasoning", "reasoning_effort", "parallel_tool_calls", "session_id"];
+const OPTIONAL_REQUEST_KEYS = ["reasoning", "reasoning_effort", "parallel_tool_calls", "tool_choice", "session_id"];
+
+/** Compares field names across camelCase, snake_case and prose punctuation. */
+function normalizedName(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/**
+ * Optional fields a provider named in a rejection. xAI answers an unsupported
+ * field with "does not support parameter reasoningEffort", so the comparison
+ * has to survive camelCase and punctuation.
+ */
+export function unsupportedRequestFields(detailMessage, body) {
+  const haystack = normalizedName(detailMessage);
+  if (!haystack) return [];
+  return OPTIONAL_REQUEST_KEYS.filter((key) => key in body && haystack.includes(normalizedName(key)));
+}
+
+export function rejectsRequestShape(detailMessage) {
+  return /does not support|not support|unsupported|unrecognized|unknown (?:field|parameter|argument|property)|invalid (?:field|parameter|argument|property|request)|extra fields|additional properties/i
+    .test(String(detailMessage || ""));
+}
+
+function quirkKey(provider, model) {
+  return `${provider || "unknown"}:${model}`;
+}
+
+function providerQuirksPath(config) {
+  return config.providerQuirksPath || join(runtimeDirectory, "provider-quirks.json");
+}
+
+/**
+ * Fields a provider has already rejected for a model. Remembering them keeps
+ * every later turn from paying for the same failed request and retry.
+ */
+async function loadProviderQuirks(config, provider, model) {
+  try {
+    const parsed = JSON.parse(await readFile(providerQuirksPath(config), "utf8"));
+    const entry = parsed?.[quirkKey(provider, model)];
+    return Array.isArray(entry?.unsupported) ? entry.unsupported.filter((item) => OPTIONAL_REQUEST_KEYS.includes(item)) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function rememberProviderQuirk(config, provider, model, fields) {
+  if (!fields.length) return;
+  const pathname = providerQuirksPath(config);
+  try {
+    let parsed = {};
+    try {
+      parsed = JSON.parse(await readFile(pathname, "utf8")) || {};
+    } catch {
+      parsed = {};
+    }
+    const key = quirkKey(provider, model);
+    const merged = [...new Set([...(parsed[key]?.unsupported || []), ...fields])];
+    parsed[key] = { unsupported: merged, updatedAt: new Date().toISOString() };
+    await mkdir(dirname(pathname), { recursive: true });
+    await writeFile(pathname, JSON.stringify(parsed, null, 2), { mode: 0o600 });
+  } catch {
+    // Losing the note only costs one retry on the next turn.
+  }
+}
 
 /**
  * Turns a provider failure into a short stable code plus one actionable line.
@@ -487,7 +550,13 @@ export function classifyProviderError(error, provider = "") {
     return { code: "bad-response", hint: `${label} returned a response the router could not read. Retry, or switch model.` };
   }
   if (status === 400 || /invalid|unsupported|unrecognized|not supported|bad request/.test(text)) {
-    return { code: "bad-request", hint: `${label} rejected the request. Send /router reset to clear a stuck thread, or /model <id> to change model.` };
+    const detail = raw.match(/failed \(\d{3}: (.+)\)$/)?.[1];
+    return {
+      code: "bad-request",
+      hint: detail
+        ? `${label} said: ${detail.slice(0, 160)}`
+        : `${label} rejected the request. Send /router reset to clear a stuck thread, or /model <id> to change model.`,
+    };
   }
   if (/enoent|spawn|permission denied|cannot find module/.test(text)) {
     return { code: "runtime", hint: "The router runtime is damaged or incomplete. Run Repair Router in the GrokRouter desktop app." };
@@ -1292,18 +1361,33 @@ async function runOpenAICompatible(config, messages, tools, fetchImpl, transport
     if (!response.ok || payload?.error) {
       const detailMessage = typeof payload?.error?.message === "string" ? payload.error.message : "";
       const optionalInBody = OPTIONAL_REQUEST_KEYS.filter((key) => key in requestBody);
-      const rejectsRequestShape = response.status === 400
-        && optionalInBody.length > 0
-        && (optionalInBody.some((key) => detailMessage.includes(key))
-          || /unsupported|unrecognized|unknown (?:field|parameter|argument)|not supported|extra fields|additional properties/i.test(detailMessage));
-      if (rejectsRequestShape && !retried.optional) {
-        // OpenAI-compatible endpoints disagree about the optional fields. Retry
-        // once with only the fields every implementation accepts.
-        retried.optional = true;
-        const reduced = { ...requestBody };
-        for (const key of optionalInBody) delete reduced[key];
-        droppedOptionalKeys = optionalInBody;
-        return request(reduced);
+      if (response.status === 400 && optionalInBody.length > 0 && !retried.optional) {
+        // OpenAI-compatible endpoints disagree about the optional fields. Drop
+        // exactly the ones the provider named, or all of them when it named
+        // none, and try once more before failing the turn.
+        const named = unsupportedRequestFields(detailMessage, requestBody);
+        const shapeRejection = named.length > 0 || rejectsRequestShape(detailMessage);
+        const classification = classifyProviderError(
+          Object.assign(new Error(detailMessage || "bad request"), { status: 400 }),
+          transport.providerId,
+        );
+        // A 400 about context, credentials or an unknown model is not a shape
+        // problem, so retrying without optional fields would only waste a call.
+        const worthRetrying = shapeRejection
+          || !["context-length", "auth", "model-not-found"].includes(classification.code);
+        if (worthRetrying) {
+          retried.optional = true;
+          const removing = named.length ? named : optionalInBody;
+          const reduced = { ...requestBody };
+          for (const key of removing) delete reduced[key];
+          droppedOptionalKeys = [...new Set([...droppedOptionalKeys, ...removing])];
+          if (named.length) {
+            // Only an attributed field is worth remembering; a blanket strip
+            // would wrongly disable tool forcing for the model forever.
+            await rememberProviderQuirk(config, transport.providerId, model, named);
+          }
+          return request(reduced);
+        }
       }
       const failure = new Error(`${label} request failed (${response.status}${detailMessage ? `: ${detailMessage}` : ""})`);
       failure.status = response.status;
@@ -1342,6 +1426,13 @@ async function runOpenAICompatible(config, messages, tools, fetchImpl, transport
   };
 
   let droppedOptionalKeys = [];
+  const knownUnsupported = await loadProviderQuirks(config, transport.providerId, model);
+  for (const key of knownUnsupported) {
+    if (key in body) {
+      delete body[key];
+      droppedOptionalKeys.push(key);
+    }
+  }
   let completion = await request(body);
   let retriedEmpty = false;
   if (!completion.text && !completion.toolCalls.length) {
@@ -2641,6 +2732,83 @@ async function loadRuntimeConfig() {
   }
 }
 
+/**
+ * Sends the smallest possible request in several shapes and reports which the
+ * account accepts. It exists so a rejected shape is identified from evidence
+ * rather than guessed at, and it prints no credential.
+ */
+export async function probeXai(config, fetchImpl = fetch, log = (line) => process.stdout.write(`${line}\n`)) {
+  const model = config.xaiModel || "grok-4.6";
+  const messages = [{ role: "user", content: "ping" }];
+  const shapes = [
+    { name: "minimal", body: { model, messages } },
+    { name: "reasoning_effort", body: { model, messages, reasoning_effort: "medium" } },
+    { name: "reasoning object", body: { model, messages, reasoning: { effort: "medium" } } },
+    { name: "tools", body: {
+      model,
+      messages,
+      tools: [{ type: "function", function: { name: "Ping", description: "ping", parameters: { type: "object", properties: {} } } }],
+      tool_choice: "auto",
+    } },
+    { name: "parallel_tool_calls", body: { model, messages, parallel_tool_calls: false } },
+    { name: "session_id", body: { model, messages, session_id: "probe" } },
+  ];
+  const hosts = [
+    ["public API", String(config.xaiBaseUrl || XAI_API_BASE_URL).replace(/\/$/, "")],
+    ["subscription proxy", String(config.xaiSubscriptionBaseUrl || XAI_SUBSCRIPTION_BASE_URL).replace(/\/$/, "")],
+  ];
+  let token;
+  try {
+    token = await xaiAccessToken(config, fetchImpl);
+  } catch (error) {
+    log(`xAI probe cannot run: ${redactDiagnostic(error?.message || error, 200)}`);
+    return { ok: false, results: [] };
+  }
+  log(`xAI request probe for model ${model}. No credential is printed.`);
+  const results = [];
+  for (const [hostLabel, baseUrl] of hosts) {
+    for (const shape of shapes) {
+      const endpoint = `${baseUrl}/chat/completions`;
+      let outcome;
+      try {
+        assertXaiBearerOrigin(endpoint);
+        const response = await fetchImpl(endpoint, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ ...shape.body, max_tokens: 16, stream: false }),
+          signal: AbortSignal.timeout(60_000),
+        });
+        const payload = await response.json().catch(() => ({}));
+        const detail = typeof payload?.error?.message === "string"
+          ? payload.error.message
+          : typeof payload?.error === "string" ? payload.error : "";
+        outcome = {
+          host: hostLabel,
+          shape: shape.name,
+          status: response.status,
+          ok: response.ok && !payload?.error,
+          detail: redactDiagnostic(detail, 200),
+        };
+      } catch (error) {
+        outcome = {
+          host: hostLabel,
+          shape: shape.name,
+          status: 0,
+          ok: false,
+          detail: redactDiagnostic(error?.message || error, 200),
+        };
+      }
+      results.push(outcome);
+      log(`  ${outcome.ok ? "PASS" : "FAIL"} ${hostLabel} · ${shape.name} · HTTP ${outcome.status}${outcome.detail ? ` · ${outcome.detail}` : ""}`);
+    }
+  }
+  const working = results.filter((entry) => entry.ok).map((entry) => `${entry.host}/${entry.shape}`);
+  log(working.length
+    ? `Accepted shapes: ${working.join(", ")}`
+    : "No shape was accepted. Copy this whole block into the GrokRouter issue.");
+  return { ok: working.length > 0, results };
+}
+
 async function runAuthCommand() {
   const config = await loadRuntimeConfig();
   try {
@@ -2655,6 +2823,10 @@ async function runAuthCommand() {
 async function main() {
   if (process.argv.includes("--xai-login") || process.argv.includes("--xai-status")) {
     await runAuthCommand();
+    return;
+  }
+  if (process.argv.includes("--xai-probe")) {
+    await probeXai(await loadRuntimeConfig());
     return;
   }
   const errorsFlag = process.argv.indexOf("--recent-errors");

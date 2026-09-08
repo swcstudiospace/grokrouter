@@ -7,10 +7,13 @@ import test from "node:test";
 import {
   classifyProviderError,
   formatFailures,
+  probeXai,
   recentFailures,
+  rejectsRequestShape,
   runOpenRouter,
   runTurn,
   runXai,
+  unsupportedRequestFields,
 } from "../runtime/run-provider.mjs";
 
 const user = (text) => ({ role: "user", content: [{ type: "text", text }] });
@@ -142,6 +145,7 @@ test("a rejected request shape is retried once without the optional fields", asy
     xaiModel: "grok-4.6",
     xaiCredentialsPath: join(root, "xai-oauth.json"),
     modelCatalogPath: join(root, "catalog"),
+    providerQuirksPath: join(root, "quirks.json"),
     sleepImpl: async () => {},
   };
   await writeFile(config.xaiCredentialsPath, JSON.stringify({
@@ -164,9 +168,22 @@ test("a rejected request shape is retried once without the optional fields", asy
     assert.equal("reasoning_effort" in bodies[1], false);
     assert.equal(bodies[1].model, "grok-4.6");
 
+    // The rejected field is remembered, so the next turn sends one request.
+    const quirks = JSON.parse(await readFile(config.providerQuirksPath, "utf8"));
+    assert.deepEqual(quirks["xai:grok-4.6"].unsupported, ["reasoning_effort"]);
+    const afterMemory = [];
+    const second = await runXai(config, [user("hi")], [], async (url, init) => {
+      afterMemory.push(JSON.parse(init.body));
+      return json({ choices: [{ message: { content: "REMEMBERED" } }] });
+    });
+    assert.equal(second.text, "REMEMBERED");
+    assert.equal(afterMemory.length, 1, "no repeated failure once the quirk is known");
+    assert.equal("reasoning_effort" in afterMemory[0], false);
+    assert.deepEqual(second.droppedOptionalKeys, ["reasoning_effort"]);
+
     // A 400 that is not about the request shape must not burn a second call.
     let contextCalls = 0;
-    await assert.rejects(runXai(config, [user("hi")], [], async () => {
+    await assert.rejects(runXai({ ...config, providerQuirksPath: join(root, "other.json") }, [user("hi")], [], async () => {
       contextCalls += 1;
       return json({ error: { message: "context_length_exceeded" } }, 400);
     }), /400/);
@@ -174,6 +191,60 @@ test("a rejected request shape is retried once without the optional fields", asy
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("xAI's camelCase rejection names the field it refused", async () => {
+  const root = await mkdtemp(join(tmpdir(), "grokbot-router-camel-"));
+  const config = {
+    xaiModel: "grok-4.20-0309-reasoning",
+    xaiCredentialsPath: join(root, "xai-oauth.json"),
+    providerQuirksPath: join(root, "quirks.json"),
+    sleepImpl: async () => {},
+  };
+  await writeFile(config.xaiCredentialsPath, JSON.stringify({
+    access: "token-1",
+    refresh: "refresh-1",
+    expiresAt: Date.now() + 3_600_000,
+  }));
+  try {
+    assert.deepEqual(
+      unsupportedRequestFields(
+        "Model grok-4.20-0309-reasoning does not support parameter reasoningEffort",
+        { reasoning_effort: "high", parallel_tool_calls: false },
+      ),
+      ["reasoning_effort"],
+      "camelCase in prose still names the snake_case field we sent",
+    );
+    assert.equal(rejectsRequestShape("Model X does not support parameter reasoningEffort"), true);
+
+    const sent = [];
+    const result = await runXai(config, [user("hi")], [], async (url, init) => {
+      const body = JSON.parse(init.body);
+      sent.push(body);
+      if ("reasoning_effort" in body) {
+        return json({
+          error: { message: `Model ${body.model} does not support parameter reasoningEffort` },
+        }, 400);
+      }
+      return json({ choices: [{ message: { content: "GROK_OK" } }] });
+    });
+    assert.equal(result.text, "GROK_OK");
+    assert.equal(sent.length, 2);
+    assert.deepEqual(result.droppedOptionalKeys, ["reasoning_effort"]);
+    const quirks = JSON.parse(await readFile(config.providerQuirksPath, "utf8"));
+    assert.deepEqual(quirks["xai:grok-4.20-0309-reasoning"].unsupported, ["reasoning_effort"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a bad-request hint repeats what the provider actually said", () => {
+  const classified = classifyProviderError(
+    new Error("xAI request failed (400: Model grok-4.6 does not support parameter reasoningEffort)"),
+    "xai",
+  );
+  assert.equal(classified.code, "bad-request");
+  assert.match(classified.hint, /xAI said: Model grok-4.6 does not support parameter reasoningEffort/);
 });
 
 test("a model with no tool support is never sent tool schemas", async () => {
@@ -208,6 +279,44 @@ test("a model with no tool support is never sent tool schemas", async () => {
   } finally {
     if (previous === undefined) delete process.env.OPENROUTER_API_KEY;
     else process.env.OPENROUTER_API_KEY = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the xAI probe reports which request shapes the account accepts", async () => {
+  const root = await mkdtemp(join(tmpdir(), "grokbot-router-probe-"));
+  const config = {
+    xaiModel: "grok-4.6",
+    xaiCredentialsPath: join(root, "xai-oauth.json"),
+  };
+  await writeFile(config.xaiCredentialsPath, JSON.stringify({
+    access: "token-secret",
+    refresh: "refresh-1",
+    expiresAt: Date.now() + 3_600_000,
+  }));
+  const lines = [];
+  try {
+    const report = await probeXai(config, async (url, init) => {
+      const body = JSON.parse(init.body);
+      if (url.startsWith("https://cli-chat-proxy.grok.com")) return json({ error: { message: "not enabled" } }, 403);
+      if ("reasoning_effort" in body) {
+        return json({ error: { message: `Model ${body.model} does not support parameter reasoningEffort` } }, 400);
+      }
+      return json({ choices: [{ message: { content: "pong" } }] });
+    }, (line) => lines.push(line));
+
+    assert.equal(report.ok, true);
+    const output = lines.join("\n");
+    assert.match(output, /PASS public API · minimal · HTTP 200/);
+    assert.match(output, /FAIL public API · reasoning_effort · HTTP 400 · Model grok-4.6 does not support parameter reasoningEffort/);
+    assert.match(output, /FAIL subscription proxy · minimal · HTTP 403/);
+    assert.match(output, /Accepted shapes: public API\/minimal/);
+    assert.equal(output.includes("token-secret"), false, "the probe never prints the token");
+
+    const signedOut = await probeXai({ xaiCredentialsPath: join(root, "missing.json") }, async () => json({}), (line) => lines.push(line));
+    assert.equal(signedOut.ok, false);
+    assert.match(lines.at(-1), /xAI probe cannot run: xAI is not signed in/);
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
