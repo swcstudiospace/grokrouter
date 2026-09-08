@@ -446,6 +446,105 @@ function redactDiagnostic(value, limit = 500) {
     .slice(0, limit);
 }
 
+const TRANSIENT_RETRY_CAP_MS = 5_000;
+const OPTIONAL_REQUEST_KEYS = ["reasoning", "reasoning_effort", "parallel_tool_calls", "session_id"];
+
+/**
+ * Turns a provider failure into a short stable code plus one actionable line.
+ * The code is what the audit records and what a Bot sees, so a user never has
+ * to read a stack trace to know whether to sign in, wait, or switch models.
+ */
+export function classifyProviderError(error, provider = "") {
+  const raw = String(error?.message || error || "").trim();
+  const text = raw.toLowerCase();
+  const status = Number(error?.status) || Number(raw.match(/failed \((\d{3})/)?.[1]) || 0;
+  const spec = PROVIDERS[provider] || null;
+  const label = spec ? spec.label : "The provider";
+  const signIn = spec ? spec.signIn : "the provider sign-in";
+  if (status === 401 || status === 403
+    || /not signed in|no longer valid|sign-in expired|needs openrouter_api_key|invalid api key|unauthorized|forbidden/.test(text)) {
+    return { code: "auth", hint: `${label} rejected the credential. Sign in again: ${signIn}.` };
+  }
+  if (status === 429 || /rate limit|too many requests|quota|insufficient credit|out of credit/.test(text)) {
+    return { code: "rate-limit", hint: `${label} is rate limiting or out of credit for this account. Wait, or switch with /provider or /model.` };
+  }
+  if (status === 404 || /model .*(not found|does not exist)|unknown model|no endpoints found|no allowed providers/.test(text)) {
+    return { code: "model-not-found", hint: "That model is not available to this account. Send /models refresh, then /model <id>." };
+  }
+  if (/context length|maximum context|too many tokens|prompt is too long|context_length_exceeded/.test(text)) {
+    return { code: "context-length", hint: "The conversation is too long for this model. Send /router reset, or pick a larger-context model." };
+  }
+  if (/timed out|timeout|exceeded \d+ms|aborterror|the operation was aborted/.test(text)) {
+    return { code: "timeout", hint: "The provider did not answer in time. Retry, or choose a faster model." };
+  }
+  if (/empty response/.test(text)) {
+    return { code: "empty-response", hint: "The model returned nothing twice. Retry, or switch model with /model <id>." };
+  }
+  if (status >= 500 || /fetch failed|network|socket hang up|econnreset|econnrefused|eai_again|enotfound/.test(text)) {
+    return { code: "provider-unavailable", hint: `${label} or the Bot computer's network is unreachable. Retry shortly.` };
+  }
+  if (/no completion choice/.test(text)) {
+    return { code: "bad-response", hint: `${label} returned a response the router could not read. Retry, or switch model.` };
+  }
+  if (status === 400 || /invalid|unsupported|unrecognized|not supported|bad request/.test(text)) {
+    return { code: "bad-request", hint: `${label} rejected the request. Send /router reset to clear a stuck thread, or /model <id> to change model.` };
+  }
+  if (/enoent|spawn|permission denied|cannot find module/.test(text)) {
+    return { code: "runtime", hint: "The router runtime is damaged or incomplete. Run Repair Router in the GrokRouter desktop app." };
+  }
+  return { code: "unknown", hint: "Run grokbot-router errors inside this Bot's computer for the recorded reason." };
+}
+
+/** Recent recorded failures, newest first, for doctor and the errors command. */
+export async function recentFailures(config, limit = 5) {
+  const pathname = config?.auditPath || join(runtimeDirectory, "audit.jsonl");
+  let raw = "";
+  try {
+    raw = await readFile(pathname, "utf8");
+  } catch {
+    return { available: false, total: 0, last24h: 0, entries: [] };
+  }
+  const entries = [];
+  for (const line of raw.split("\n").slice(-4000)) {
+    if (!line.trim()) continue;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (event?.event !== "turn_error" && event?.event !== "host_bridge_error") continue;
+    entries.push({
+      timestamp: typeof event.timestamp === "string" ? event.timestamp : "",
+      provider: event.provider || "host bridge",
+      model: event.model || "",
+      code: event.errorCode || "",
+      hint: event.hint || "",
+      reason: redactDiagnostic(event.error || event.diagnostic || "", 240),
+    });
+  }
+  const dayAgo = Date.now() - 24 * 60 * 60_000;
+  return {
+    available: true,
+    total: entries.length,
+    last24h: entries.filter((entry) => Date.parse(entry.timestamp) >= dayAgo).length,
+    entries: entries.slice(-Math.max(1, limit)).reverse(),
+  };
+}
+
+export function formatFailures(failures) {
+  if (!failures.available) return "Recent failures: no audit log yet (no turn has run since installation).";
+  if (!failures.total) return "Recent failures: none recorded.";
+  const lines = [`Recent failures: ${failures.total} recorded, ${failures.last24h} in the last 24 hours. Newest first:`];
+  for (const entry of failures.entries) {
+    const model = entry.model ? ` (${entry.model})` : "";
+    const code = entry.code ? ` [${entry.code}]` : "";
+    lines.push(`  • ${entry.timestamp || "unknown time"} ${entry.provider}${model}${code} ${entry.reason}`);
+    if (entry.hint) lines.push(`    → ${entry.hint}`);
+  }
+  return lines.join("\n");
+}
+
 function normalizeUsage(usage) {
   return {
     inputTokens: Number(usage?.input_tokens ?? usage?.inputTokens ?? 0),
@@ -1037,6 +1136,7 @@ async function persistedOpenRouterKey(config) {
 export async function runOpenRouter(config, messages, tools, fetchImpl = fetch) {
   const apiKey = await persistedOpenRouterKey(config);
   return runOpenAICompatible(config, messages, tools, fetchImpl, {
+    providerId: "openrouter",
     label: "OpenRouter",
     model: config.openRouterModel || "anthropic/claude-sonnet-5",
     reasoning: config.openRouterReasoning || "medium",
@@ -1055,6 +1155,7 @@ export async function runXai(config, messages, tools, fetchImpl = fetch) {
   const model = config.xaiModel || "grok-4.6";
   let refreshed = false;
   return runOpenAICompatible(config, messages, tools, fetchImpl, {
+    providerId: "xai",
     label: "xAI",
     model,
     reasoning: config.xaiReasoning || "medium",
@@ -1082,7 +1183,19 @@ async function runOpenAICompatible(config, messages, tools, fetchImpl, transport
   const automaticGreeting = !visibleUserText
     && !latestAutomationCompletion(messages)
     && toolResultCallIds(messages).size === 0;
-  const offeredTools = directTextOnly || automaticGreeting ? [] : normalizedTools;
+  let offeredTools = directTextOnly || automaticGreeting ? [] : normalizedTools;
+  // A model with no native tool support answers a tools request with a 400 or
+  // silently ignores it. Drop the schemas up front and let the guarded textual
+  // recovery handle the turn instead of burning a failed request.
+  let toolSupportDowngrade = false;
+  if (offeredTools.length) {
+    const known = await loadProviderModels(transport.providerId, config, {}, { cacheOnly: true }).catch(() => ({ models: [] }));
+    const entry = findCatalogModel(known.models, model);
+    if (entry && entry.tools === false) {
+      offeredTools = [];
+      toolSupportDowngrade = true;
+    }
+  }
   const currentUserIndex = latestUserIndex(messages);
   const currentTurnHasToolResult = currentUserIndex >= 0
     && messages.slice(currentUserIndex + 1).some((message) => toolResultCallIds(message).size > 0);
@@ -1144,8 +1257,10 @@ async function runOpenAICompatible(config, messages, tools, fetchImpl, transport
   };
   const endpoint = `${transport.baseUrl}/chat/completions`;
   if (transport.guardUrl) transport.guardUrl(endpoint);
-  const request = async (requestBody, attempt = 0) => {
-    const token = await transport.bearer({ retryAfterUnauthorized: attempt > 0 });
+  const retried = { token: false, transient: false, optional: false };
+  const sleep = config.sleepImpl || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const request = async (requestBody) => {
+    const token = await transport.bearer({ retryAfterUnauthorized: retried.token });
     const response = await fetchImpl(endpoint, {
       method: "POST",
       headers: {
@@ -1157,14 +1272,42 @@ async function runOpenAICompatible(config, messages, tools, fetchImpl, transport
       signal: AbortSignal.timeout(Number(config.timeoutMs || 15 * 60_000)),
     });
     const payload = await response.json().catch(() => ({}));
-    if (response.status === 401 && attempt === 0 && transport.guardUrl) {
+    if (response.status === 401 && !retried.token && transport.guardUrl) {
       // A subscription bearer can expire between the pre-flight check and the
       // request; refresh exactly once before reporting the failure.
-      return request(requestBody, 1);
+      retried.token = true;
+      return request(requestBody);
+    }
+    if ((response.status === 429 || response.status >= 500) && !retried.transient) {
+      // One bounded retry absorbs a burst limit or a provider blip instead of
+      // showing the user a failed turn they would only retry by hand.
+      retried.transient = true;
+      const advertised = Number(response.headers?.get?.("retry-after")) * 1000;
+      const delay = Number.isFinite(advertised) && advertised > 0
+        ? Math.min(advertised, TRANSIENT_RETRY_CAP_MS)
+        : 1_000;
+      await sleep(delay);
+      return request(requestBody);
     }
     if (!response.ok || payload?.error) {
-      const detail = typeof payload?.error?.message === "string" ? `: ${payload.error.message}` : "";
-      throw new Error(`${label} request failed (${response.status}${detail})`);
+      const detailMessage = typeof payload?.error?.message === "string" ? payload.error.message : "";
+      const optionalInBody = OPTIONAL_REQUEST_KEYS.filter((key) => key in requestBody);
+      const rejectsRequestShape = response.status === 400
+        && optionalInBody.length > 0
+        && (optionalInBody.some((key) => detailMessage.includes(key))
+          || /unsupported|unrecognized|unknown (?:field|parameter|argument)|not supported|extra fields|additional properties/i.test(detailMessage));
+      if (rejectsRequestShape && !retried.optional) {
+        // OpenAI-compatible endpoints disagree about the optional fields. Retry
+        // once with only the fields every implementation accepts.
+        retried.optional = true;
+        const reduced = { ...requestBody };
+        for (const key of optionalInBody) delete reduced[key];
+        droppedOptionalKeys = optionalInBody;
+        return request(reduced);
+      }
+      const failure = new Error(`${label} request failed (${response.status}${detailMessage ? `: ${detailMessage}` : ""})`);
+      failure.status = response.status;
+      throw failure;
     }
     const message = payload?.choices?.[0]?.message;
     if (!message) throw new Error(`${label} returned no completion choice`);
@@ -1198,6 +1341,7 @@ async function runOpenAICompatible(config, messages, tools, fetchImpl, transport
     };
   };
 
+  let droppedOptionalKeys = [];
   let completion = await request(body);
   let retriedEmpty = false;
   if (!completion.text && !completion.toolCalls.length) {
@@ -1219,6 +1363,8 @@ async function runOpenAICompatible(config, messages, tools, fetchImpl, transport
     usage: normalizeOpenRouterUsage(completion.payload.usage),
     model: completion.payload.model || model,
     emptyResponse: !completion.text && !completion.toolCalls.length,
+    ...(droppedOptionalKeys.length ? { droppedOptionalKeys } : {}),
+    ...(toolSupportDowngrade ? { toolSupportDowngrade: true } : {}),
     retriedEmpty,
     recoveredTextualToolCall: completion.recoveredTextualToolCall,
     textualToolDiagnostics: completion.textualToolDiagnostics,
@@ -1980,6 +2126,7 @@ async function doctorText(config, state) {
       checks.push("Codex CLI: missing");
     }
   }
+  checks.push(formatFailures(await recentFailures(config, 3)));
   checks.push(`Grok tools: bridged on demand (${state.provider === "codex" || state.provider === "anthropic" ? "structured adapter" : "native function calls"})`);
   checks.push("Run a real computer and sub-agent parity test before treating those capabilities as verified for a model.");
   return checks.join("\n");
@@ -2404,12 +2551,18 @@ export async function runTurn(input, dependencies = {}) {
       }).catch(() => {});
     }
     const diagnostic = redactDiagnostic(error?.message || error);
+    const classification = classifyProviderError(error, state.provider);
+    error.routerCode = classification.code;
+    error.routerHint = classification.hint;
+    error.routerDiagnostic = diagnostic;
     await appendAudit(config, {
       event: "turn_error",
       sessionId: state.sessionId,
       provider: state.provider,
       model: state.model,
       error: diagnostic,
+      errorCode: classification.code,
+      hint: classification.hint,
     });
     throw error;
   }
@@ -2462,10 +2615,14 @@ export async function runTurn(input, dependencies = {}) {
     toolCallIds: (result.toolCalls || []).map((call) => call.toolCallId).filter(Boolean),
     ...(result.emptyRecovery ? { emptyRecovery: result.emptyRecovery } : {}),
     ...(result.recoveredTextualToolCall ? { recoveredTextualToolCall: true } : {}),
+    ...(result.droppedOptionalKeys?.length ? { droppedOptionalKeys: result.droppedOptionalKeys } : {}),
+    ...(result.toolSupportDowngrade ? { toolSupportDowngrade: true } : {}),
     ...(result.textualToolDiagnostics ? { textualToolDiagnostics: result.textualToolDiagnostics } : {}),
   });
   const {
     emptyResponse: _emptyResponse,
+    droppedOptionalKeys: _droppedOptionalKeys,
+    toolSupportDowngrade: _toolSupportDowngrade,
     retriedEmpty: _retriedEmpty,
     emptyRecovery: _emptyRecovery,
     recoveredTextualToolCall: _recoveredTextualToolCall,
@@ -2500,6 +2657,12 @@ async function main() {
     await runAuthCommand();
     return;
   }
+  const errorsFlag = process.argv.indexOf("--recent-errors");
+  if (errorsFlag >= 0) {
+    const limit = Number(process.argv[errorsFlag + 1]) || 10;
+    process.stdout.write(`${formatFailures(await recentFailures(await loadRuntimeConfig(), limit))}\n`);
+    return;
+  }
   const input = JSON.parse(await readStdin());
   const result = await runTurn(input);
   process.stdout.write(JSON.stringify(result));
@@ -2510,7 +2673,12 @@ if (isMain) {
   main().catch(async (error) => {
     const message = redactDiagnostic(error instanceof Error ? error.message : error, 1_000);
     try {
-      const raw = { ok: false, error: message };
+      const raw = {
+        ok: false,
+        error: message,
+        ...(error?.routerCode ? { errorCode: error.routerCode } : {}),
+        ...(error?.routerHint ? { hint: error.routerHint } : {}),
+      };
       process.stdout.write(JSON.stringify(raw));
     } finally {
       process.exitCode = 0;

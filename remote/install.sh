@@ -357,6 +357,46 @@ else
   printf '[3/6] OpenRouter/xAI-only setup needs no dependency download\n'
 fi
 
+if [[ "$ENABLED_PROVIDERS" == *anthropic* ]]; then
+  # npm resolves the Claude Agent SDK's native binary from platform, arch and
+  # libc. A mismatch only shows up when the binary is executed, so prove it
+  # runs now and pin the verified path instead of globbing for one later.
+  claude_platform="$(node -p 'process.platform + "-" + process.arch')"
+  claude_libc="$(node -p '(process.report.getReport().header.glibcVersionRuntime ? "" : "-musl")')"
+  claude_cli=""
+  for claude_candidate in \
+    "$STAGE_ROOT/node_modules/@anthropic-ai/claude-agent-sdk-${claude_platform}${claude_libc}/claude" \
+    "$STAGE_ROOT"/node_modules/@anthropic-ai/claude-agent-sdk-*/claude; do
+    if [[ -x "$claude_candidate" ]] && "$claude_candidate" --version >/dev/null 2>&1; then
+      claude_cli="$claude_candidate"
+      break
+    fi
+  done
+  if [[ -z "$claude_cli" ]]; then
+    printf '[3/6] WARNING: no runnable Claude Agent SDK binary for %s%s. Anthropic sign-in will report this; other providers are unaffected.\n' \
+      "$claude_platform" "$claude_libc"
+  else
+    printf '[3/6] Verified the Claude Agent SDK binary for %s%s\n' "$claude_platform" "$claude_libc"
+  fi
+  ROUTER_CONFIG_PATH="$STAGE_ROOT/provider.json" \
+  ROUTER_CLAUDE_CLI="${claude_cli/#$STAGE_ROOT/$INSTALL_ROOT}" \
+  python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+path = Path(os.environ["ROUTER_CONFIG_PATH"])
+config = json.loads(path.read_text())
+value = os.environ["ROUTER_CLAUDE_CLI"]
+if value:
+    config["anthropicExecutablePath"] = value
+else:
+    config.pop("anthropicExecutablePath", None)
+path.write_text(json.dumps(config, indent=2) + "\n")
+path.chmod(0o600)
+PY
+fi
+
 emit_phase "ACTIVATE_RUNTIME"
 printf '[4/6] Activating runtime atomically\n'
 if [[ -e "$INSTALL_ROOT" ]]; then

@@ -153,6 +153,8 @@ From now on, stay inside Grok Bot. You do not need to keep GrokRouter open.
 | Step 5 says this Bot computer's host did not pass the stock-host checks | GrokRouter accepts a host either from the exact signed list or by structural verification (no router marker, every source anchor exactly once, a read-only patch that passes `node --check`, and a plausible size). If both fail, nothing is patched. If you previously installed OpenGrok or another router, use **Restore Stock Grok Bot** first. Otherwise click **Copy safe diagnostics** and open the support issue; the complete non-secret fingerprint and the reason are included. |
 | The version says beta.46, but Doctor says `stock-or-unknown`, `no router marker`, or that the host adapter is not patched | The runtime and live host adapter are separate. **Do not update or install from inside Grok Bot.** Follow [the adapter-mismatch repair](#the-version-is-correct-but-the-host-adapter-is-not-patched). |
 | Grok Bot answers a router command conversationally, opens its terminal, or offers to install/repair GrokRouter itself | Stop that attempt. The router did not intercept the command. Use the GrokRouter desktop app on the Mac to run Doctor and Repair Router. |
+| `Model Router error [code]` appears in a Bot | The code names the cause and the message names the fix. For the full history, open that Bot's computer and run `grokbot-router errors`. `/router doctor` also lists the three most recent failures. |
+| Anthropic sign-in says the installed Claude binary does not run | Reinstall with **Anthropic** checked. The installer now verifies the binary matches this Bot computer's platform and C library before recording it. |
 | GrokRouter was working and then stopped | Open GrokRouter, click **Run Doctor**, then **Repair Router**. If you want to undo everything, click **Restore Stock Grok Bot**. |
 
 If Doctor still reports a failure, copy its complete non-secret output into an [installation support issue](https://github.com/promptadvisers/grokrouter/issues/new?template=installation-failure.yml) or give it to your AI assistant. Never post an API key.
@@ -459,7 +461,7 @@ Type these into Grok Bot's normal composer. The installer publishes user-invocab
 | `openai/gpt-5.6-luna` | Paste a listed OpenRouter model ID by itself |
 | `/reasoning minimal\|low\|medium\|high\|xhigh` | Change Codex reasoning effort |
 | `/router reset` | Start a fresh provider thread without deleting the Grok transcript |
-| `/router doctor` | Report runtime, patch, provider, and credential health |
+| `/router doctor` | Report runtime, patch, provider, credential health, and recent failures |
 | `/doctor` | Short alias for `/router doctor` |
 | `/router help` | Show the command reference |
 

@@ -76,6 +76,20 @@ The Anthropic provider drives `@anthropic-ai/claude-agent-sdk`, which spawns its
 
 `runtime/xai-oauth.mjs` implements the RFC 8628 device flow against `auth.x.ai` with xAI's public desktop client. Credentials are written with mode 0600 beside the runtime, refreshed 60 seconds before expiry, and quarantined on `invalid_grant` so the user is told to sign in again instead of the router retrying forever. The request path reuses the OpenRouter bridge as an OpenAI-compatible transport with `reasoning_effort`, one refresh-and-retry on 401, and an origin guard that refuses to send the bearer anywhere but `api.x.ai` or `cli-chat-proxy.grok.com`.
 
+## Failure diagnosis
+
+Every failed turn is classified into a short stable code before it reaches the user: `auth`, `rate-limit`, `model-not-found`, `context-length`, `timeout`, `empty-response`, `provider-unavailable`, `bad-response`, `bad-request`, `runtime`, or `unknown`. The code and a one-line fix are written to the audit event, returned to the host, and shown in the Bot as `Model Router error [code]`, so a user is never told only that something failed.
+
+`/router doctor` and `grokbot-router doctor` report the three most recent failures with their code and redacted reason; `grokbot-router errors [count]` prints more. The reason was always recorded in `audit.jsonl`; these surfaces read it.
+
+Three guardrails remove common failure classes before they reach the user:
+
+- A 429 or 5xx is retried exactly once, honouring `Retry-After` up to five seconds.
+- A 400 that names one of the optional request fields is retried once with only the fields every OpenAI-compatible endpoint accepts.
+- A model the catalog marks as having no native tool support is never sent tool schemas.
+
+Each guardrail records what it did in the audit (`droppedOptionalKeys`, `toolSupportDowngrade`) so a silent downgrade stays visible.
+
 ## Live model catalogs
 
 `runtime/model-catalog.mjs` discovers each provider's real model list instead of trusting a packaged shortlist, so `/models` never hides a model a vendor has shipped:

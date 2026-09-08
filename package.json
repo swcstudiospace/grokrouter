@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "npm run test:runtime && npm run test:patch && npm run test:installer && npm run test:windows",
-    "test:runtime": "node --test tests/runtime.test.mjs tests/openrouter-catalog.test.mjs tests/xai-oauth.test.mjs tests/providers.test.mjs tests/model-catalog.test.mjs",
+    "test:runtime": "node --test tests/runtime.test.mjs tests/openrouter-catalog.test.mjs tests/xai-oauth.test.mjs tests/providers.test.mjs tests/model-catalog.test.mjs tests/diagnostics.test.mjs",
     "test:patch": "python3 -m unittest tests/test_patch.py",
     "test:installer": "bash tests/installer.test.sh",
     "test:windows": "node --test tests/windows-installer.test.mjs",

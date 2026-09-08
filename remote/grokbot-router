@@ -14,13 +14,54 @@ CONFIG_PATH="$INSTALL_ROOT/provider.json"
 PATCHER="$INSTALL_ROOT/patch/router_patch.py"
 HOST_REGISTRY_TOOL="$INSTALL_ROOT/bin/host-registry"
 CODEX_CLI="$INSTALL_ROOT/node_modules/.bin/codex"
-CLAUDE_CLI=""
-for candidate in "$INSTALL_ROOT"/node_modules/@anthropic-ai/claude-agent-sdk-*/claude; do
-  if [[ -x "$candidate" ]]; then
-    CLAUDE_CLI="$candidate"
-    break
+# The Claude Agent SDK ships one native binary per platform AND libc. Picking
+# the first glob match runs a musl build on a glibc box, which fails with
+# "cannot execute: required file not found". Resolve the exact package, then
+# prove the binary runs before offering it.
+claude_native_package() {
+  local platform libc
+  platform="$(node -p 'process.platform + "-" + process.arch' 2>/dev/null || true)"
+  [[ -z "$platform" ]] && return 1
+  libc="$(node -p '(process.report.getReport().header.glibcVersionRuntime ? "" : "-musl")' 2>/dev/null || true)"
+  printf '%s%s\n' "$platform" "$libc"
+}
+claude_cli_runs() {
+  [[ -n "$1" && -x "$1" ]] && "$1" --version >/dev/null 2>&1
+}
+resolve_claude_cli() {
+  CLAUDE_CLI=""
+  CLAUDE_CLI_REASON="the Claude Agent SDK is not installed"
+  local configured expected candidate found_but_broken=0
+  configured="$(config_value anthropicExecutablePath)"
+  if [[ -n "$configured" ]]; then
+    if claude_cli_runs "$configured"; then
+      CLAUDE_CLI="$configured"
+      return 0
+    fi
+    found_but_broken=1
   fi
-done
+  expected="$(claude_native_package || true)"
+  if [[ -n "$expected" ]]; then
+    candidate="$INSTALL_ROOT/node_modules/@anthropic-ai/claude-agent-sdk-$expected/claude"
+    if claude_cli_runs "$candidate"; then
+      CLAUDE_CLI="$candidate"
+      return 0
+    fi
+    [[ -e "$candidate" ]] && found_but_broken=1
+  fi
+  for candidate in "$INSTALL_ROOT"/node_modules/@anthropic-ai/claude-agent-sdk-*/claude; do
+    [[ -e "$candidate" ]] || continue
+    found_but_broken=1
+    if claude_cli_runs "$candidate"; then
+      CLAUDE_CLI="$candidate"
+      return 0
+    fi
+  done
+  if [[ "$found_but_broken" == "1" ]]; then
+    CLAUDE_CLI_REASON="the installed Claude binary does not run on this Bot computer (expected the ${expected:-unknown} build). Reinstall with Anthropic enabled, or run Repair Router."
+  fi
+  return 1
+}
 PROVIDER_RUNNER="$INSTALL_ROOT/run-provider.mjs"
 KNOWN_PROVIDERS="codex openrouter anthropic xai"
 is_known_provider() {
@@ -95,6 +136,7 @@ usage() {
     "  enable | disable               Enable or bypass the router" \
     "  restart                        Restart Grok Bot's host process" \
     "  uninstall                      Restore the verified stock host" \
+    "  errors [count]                 Explain the most recent router failures" \
     "  logs                           Show redacted recent audit events"
 }
 
@@ -103,6 +145,22 @@ require_config() {
     printf 'ERROR: router configuration is missing: %s\n' "$CONFIG_PATH" >&2
     exit 1
   fi
+}
+
+config_value() {
+  [[ -f "$CONFIG_PATH" ]] || return 0
+  ROUTER_CONFIG_PATH="$CONFIG_PATH" ROUTER_CONFIG_KEY="$1" python3 - <<'PY' 2>/dev/null || true
+import json
+import os
+from pathlib import Path
+
+try:
+    config = json.loads(Path(os.environ["ROUTER_CONFIG_PATH"]).read_text())
+    value = config.get(os.environ["ROUTER_CONFIG_KEY"], "")
+except Exception:
+    value = ""
+print(value if isinstance(value, str) else "")
+PY
 }
 
 update_config() {
@@ -234,10 +292,11 @@ PY
       printf '  CLI missing\n'
     fi
     printf 'Anthropic\n'
-    if [[ -n "$CLAUDE_CLI" ]]; then
+    if resolve_claude_cli; then
+      printf '  CLI: %s\n' "$(basename "$(dirname "$CLAUDE_CLI")")"
       "$CLAUDE_CLI" auth status 2>&1 | sed -E 's/([A-Za-z0-9._%+-]+)@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/[account]/g' | sed 's/^/  /' || true
     else
-      printf '  Claude Agent SDK missing (enable the Anthropic provider and reinstall)\n'
+      printf '  Unavailable: %s\n' "$CLAUDE_CLI_REASON"
     fi
     printf 'xAI\n'
     printf '  Credential: %s\n' "$(GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" node "$PROVIDER_RUNNER" --xai-status 2>&1 || true)"
@@ -260,6 +319,8 @@ elif value:
 else:
     print("  Credential: not configured")
 PY
+    printf 'Recent failures\n'
+    GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" node "$PROVIDER_RUNNER" --recent-errors 3 2>&1 | sed 's/^/  /'
     printf 'Native commands\n'
     printf '  Registration is managed per Bot by the GrokRouter desktop installer.\n'
     printf '  Run Repair in GrokRouter to sync Bots or channels created after installation.\n'
@@ -279,8 +340,8 @@ PY
         exec "$CODEX_CLI" login --device-auth
         ;;
       anthropic)
-        if [[ -z "$CLAUDE_CLI" ]]; then
-          printf 'ERROR: the Claude Agent SDK is missing; enable the Anthropic provider and reinstall the router\n' >&2
+        if ! resolve_claude_cli; then
+          printf 'ERROR: Anthropic sign-in is unavailable because %s\n' "$CLAUDE_CLI_REASON" >&2
           exit 1
         fi
         # The bundled binary owns the Anthropic sign-in. Third-party use of a
@@ -366,6 +427,10 @@ PY
     printf 'The runtime and stock backup were retained for recovery.\n'
     nohup sh -c "sleep 3; pkill -f '/home/box/sand-host/host-main.cjs' >/dev/null 2>&1 || true" \
       >/dev/null 2>&1 &
+    ;;
+  errors)
+    require_config
+    GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" node "$PROVIDER_RUNNER" --recent-errors "${2:-10}"
     ;;
   logs)
     if [[ -f "$INSTALL_ROOT/audit.jsonl" ]]; then

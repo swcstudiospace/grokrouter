@@ -109,7 +109,7 @@ function getGrokBotRouterChildEnv() {
 function appendGrokBotRouterHostError(config, error) {
   try {
     const diagnostic = String(error?.message || error || "Unknown host bridge error")
-      .replace(/sk-or-v1-[a-z0-9_-]+|sk-[a-z0-9_-]+|gh[opsu]_[a-z0-9_-]+/gi, "[REDACTED]")
+      .replace(/sk-or-v1-[a-z0-9_-]+|sk-[a-z0-9_-]+|gh[opsu]_[a-z0-9_-]+|xai-[a-z0-9_-]+|Bearer\s+[a-z0-9._-]+|ey[a-z0-9_-]{20,}\.[a-z0-9._-]+/gi, "[REDACTED]")
       .replace(/\s+/g, " ")
       .slice(0, 500);
     const auditPath = config?.auditPath || "/home/box/sand-data/grokbot-router/audit.jsonl";
@@ -178,7 +178,10 @@ function runGrokBotRouter(config, messages, tools, sessionOptions) {
         return;
       }
       if (!payload?.ok || typeof payload.text !== "string") {
-        reject(new Error(payload?.error || "Provider returned no response"));
+        const failure = new Error(payload?.error || "Provider returned no response");
+        failure.routerCode = typeof payload?.errorCode === "string" ? payload.errorCode : "";
+        failure.routerHint = typeof payload?.hint === "string" ? payload.hint : "";
+        reject(failure);
         return;
       }
       resolve(payload);
@@ -204,8 +207,12 @@ var GrokBotRouterPromptExecutor = class extends MockPromptExecutor {
       .catch((error) => {
         console.error("[grokbot-router] Provider turn failed:", error?.stack || error);
         appendGrokBotRouterHostError(this.config, error);
+        const code = typeof error?.routerCode === "string" && error.routerCode ? error.routerCode : "unknown";
+        const hint = typeof error?.routerHint === "string" && error.routerHint
+          ? error.routerHint
+          : "Open this Bot's computer and run grokbot-router errors for the recorded reason.";
         return {
-          text: "Model Router error. Open this Bot's computer and run grokbot-router doctor for a private diagnostic.",
+          text: `Model Router error [${code}]. ${hint} Full detail: run grokbot-router errors in this Bot's computer.`,
           toolCalls: [],
           usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
           bridgeError: true
