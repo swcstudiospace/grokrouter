@@ -7,6 +7,7 @@ manifest. It never modifies the host, never prints credentials, and prints at
 most a few short lines of context per anchor so proprietary source is not
 copied wholesale. Paste the output into a private chat, not a public issue.
 """
+import argparse
 import hashlib
 import json
 import os
@@ -20,6 +21,13 @@ REQUIRED_ANCHORS = [
     "createSession(onRequestId, sessionOptions)",
     "const mockResponse = process.env.SAND_AGENT_MOCK_RESPONSE;",
     "const mainSessionOptions = {",
+]
+# Mock-response anchor variants seen across supported versions. The probe
+# always reports counts for every variant so a new build's dialect is visible
+# without a second run.
+KNOWN_MOCK_ANCHORS = [
+    "const mockResponse = process.env.SAND_AGENT_MOCK_RESPONSE;",
+    "const mockResponse = options2.agentMockResponse;",
 ]
 # When an exact anchor is missing, show the nearest candidates so the manifest
 # can be updated without a copy of the host.
@@ -46,6 +54,10 @@ def version_hints(source: str) -> list[str]:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Read-only Grok Bot host probe.")
+    parser.add_argument("--anchor", action="append", default=[],
+                        help="extra candidate anchor to count exactly (repeatable)")
+    probe_args = parser.parse_args()
     if not HOST.is_file():
         print(json.dumps({"ok": False, "error": f"host not found at {HOST}"}))
         return 1
@@ -53,6 +65,7 @@ def main() -> int:
     digest = hashlib.sha256(data).hexdigest()
     source = data.decode("utf-8", errors="replace")
     lines = source.split("\n")
+    extra = [anchor for anchor in dict.fromkeys(probe_args.anchor) if anchor]
     report = {
         "ok": True,
         "host": str(HOST),
@@ -63,6 +76,8 @@ def main() -> int:
         "node": os.popen("node -v 2>/dev/null").read().strip(),
         "versionHints": version_hints(source),
         "anchors": {anchor: source.count(anchor) for anchor in REQUIRED_ANCHORS},
+        "mockAnchors": {anchor: source.count(anchor) for anchor in KNOWN_MOCK_ANCHORS},
+        "customAnchors": {anchor: source.count(anchor) for anchor in extra},
         "candidates": {},
     }
     for name, pattern in CANDIDATE_PATTERNS.items():

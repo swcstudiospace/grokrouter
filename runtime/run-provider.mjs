@@ -2252,7 +2252,7 @@ async function controlResult(config, key, state, input, catalogDependencies = {}
       "• /models search <text> — search the OpenRouter catalog",
       "• /model <id> — switch this bot's model",
       "• /models <id> — also switches (forgiving alias)",
-      "• paste a listed vendor/model ID by itself — also switches",
+      "• paste any catalog vendor/model ID by itself — also switches",
       "• /reasoning minimal|low|medium|high|xhigh — change effort",
       "• /router reset — start a fresh provider thread",
       "• /router doctor — show installation health",
@@ -2304,7 +2304,7 @@ async function controlResult(config, key, state, input, catalogDependencies = {}
     const footer = [
       `Current: ${state.model}. Reasoning: ${state.reasoning}.`,
       state.provider === "openrouter"
-        ? "Switch: send /model <id>, /models <id>, or paste one listed vendor/model ID by itself."
+        ? "Switch: send /model <id>, /models <id>, or paste any catalog vendor/model ID by itself."
         : "Switch: send /model <id>, /models <id>, or paste one listed ID by itself.",
       state.provider === "openrouter"
         ? "Also: /models free, /models all, /models search <text>, /models refresh."
@@ -2381,8 +2381,26 @@ async function controlResult(config, key, state, input, catalogDependencies = {}
     output.model = pastedModel;
     return output;
   }
+  // A pasted vendor/model ID from the live catalog switches too, so the bot
+  // is not limited to the packaged shortlist. This stays offline: only the
+  // cached catalog is consulted, and anything unrecognized still falls
+  // through to the explicit-/model guidance below instead of inference.
+  if (state.provider === "openrouter" && validModelId("openrouter", normalized)) {
+    const catalog = await loadProviderModels(state.provider, config, catalogDependencies, { cacheOnly: true });
+    const entry = findCatalogModel(catalog.models, normalized);
+    if (entry) {
+      const note = entry.tools === false
+        ? " Note: this model does not advertise native tool calling, so Grok tools will rely on text recovery."
+        : "";
+      const previous = state.model;
+      await persist({ model: entry.id, threadId: null, threadEpoch: Number(state.threadEpoch || 0) + 1 });
+      const output = result(`Switched this bot from ${previous} to ${entry.id} on ${providerLabel(state.provider)}. Its Grok transcript is preserved.${note}`);
+      output.model = entry.id;
+      return output;
+    }
+  }
   if (/^\/models?(?:\s|$)/i.test(normalized)) {
-    return result("Model command not understood. Send /models to see choices, then /model <id> or paste one listed vendor/model ID by itself.");
+    return result("Model command not understood. Send /models to see choices, then /model <id> or paste any catalog model ID by itself.");
   }
   const reasoningMatch = normalized.match(/^\/reasoning\s+(minimal|low|medium|high|xhigh)$/i);
   if (reasoningMatch) {
@@ -2394,7 +2412,7 @@ async function controlResult(config, key, state, input, catalogDependencies = {}
     return result("Router command not understood. Send /router help to see the exact controls.");
   }
   if (/^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._:+-]*$/i.test(normalized)) {
-    return result(`Model “${normalized}” is not in this bot's configured list. Send /models, then paste one listed ID or use /model <id> explicitly.`);
+    return result(`Model “${normalized}” is not in the known ${providerLabel(state.provider)} list. Send /models refresh, then paste the ID again — or switch explicitly with /model <id>.`);
   }
   return null;
 }

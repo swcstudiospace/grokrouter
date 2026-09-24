@@ -1,0 +1,70 @@
+name: Grok Bot version watch
+
+# Polls the official Grok Bot stable feed once a day and opens a tracking
+# issue when the feed reports a version with no compatibility manifest.
+# It never edits a manifest or claims support; it only asks a human with a
+# Mac to run the read-only host probe. The probe output then feeds the
+# "Ingest host probe" workflow, which scaffolds the manifest draft.
+on:
+  schedule:
+    - cron: "23 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: "3.13"
+      - name: Check the official feed against shipped manifests
+        id: check
+        run: |
+          set +e
+          python3 scripts/check-grokbot-version.py --check | tee /tmp/version-report.json
+          code=${PIPESTATUS[0]}
+          echo "exit=$code" >> "$GITHUB_OUTPUT"
+          version="$(python3 -c "import json;print(json.load(open('/tmp/version-report.json'))['feedVersion'])" 2>/dev/null)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Open or update the tracking issue for a new Grok Bot version
+        if: steps.check.outputs.exit == '2'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          title="Grok Bot $NEW_VERSION has no router manifest"
+          body="$(cat <<EOF
+          The official stable feed now reports **Grok Bot $NEW_VERSION**, which has no manifest in \`patch/manifests/\`. GrokRouter refuses to install there until a real host probe lands. This issue tracks that work; it does not loosen any gate.
+
+          ## 1. Probe the untouched stock host (on a Mac with Grok Bot $NEW_VERSION)
+
+          Select any Bot in Grok Bot, click **Open computer**, and run this read-only probe in the Bot terminal. It never modifies the host and never prints credentials:
+
+          \`\`\`bash
+          python3 scripts/host-probe.py --anchor 'function createMockPromptExecutor(options2)' --anchor 'createSession(onRequestId, sessionOptions)' --anchor 'const mainSessionOptions = {' > /tmp/probe.txt
+          \`\`\`
+
+          If an anchor reports a count other than 1, use the probe's \`candidates\` lines to pick the replacement source line for this build, re-run the probe with \`--anchor '<exact line>'\` for it, and confirm every chosen anchor counts exactly once with an empty \`candidates.routerMarker\`.
+
+          ## 2. Ingest the probe
+
+          Paste the complete probe output into the **Ingest host probe** workflow (Actions tab): \`version\` = \`$NEW_VERSION\`, \`probe_json\` = the full output, \`anchors\` = one reviewed anchor per line. It scaffolds \`patch/manifests/$NEW_VERSION.json\`, updates the installer version lists, and opens a draft PR.
+
+          ## 3. Prove support before claiming it
+
+          Run \`npm test\` and the full fresh-Bot procedure in \`docs/FRESH-BOT-ACCEPTANCE.md\`, then record the result in \`docs/TEST-MATRIX.md\`. See \`docs/VERSION-TRACKING.md\` for the complete pipeline.
+          EOF
+          )"
+          existing="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')"
+          if [[ -n "$existing" ]]; then
+            echo "Tracking issue #$existing already open; leaving it in place."
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

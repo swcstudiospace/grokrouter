@@ -15,7 +15,7 @@ If Xcode Command Line Tools are missing, macOS opens Apple's installer. The view
 
 ## Release checklist
 
-1. Confirm the official Grok Bot version is still exactly 0.30.0.
+1. Confirm which Grok Bot version you are releasing for: `python3 scripts/check-grokbot-version.py`. If the feed reports a version with no manifest in `patch/manifests/`, follow `docs/VERSION-TRACKING.md` first — never edit a version string merely to get past the gate.
 2. Update version fields and release notes.
 3. Run `npm ci --prefix runtime --ignore-scripts --no-audit --no-fund`.
 4. Run `npm test`.

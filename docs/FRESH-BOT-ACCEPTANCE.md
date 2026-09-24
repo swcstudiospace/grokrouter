@@ -9,7 +9,7 @@ This is the acceptance test. An existing Bot is not enough: create a brand-new B
 3. Type `/` without sending. Confirm Grok's native suggestion menu lists `provider`, `models`, `model`, `reasoning`, `router`, and `doctor`, or that `/router doctor` reports an explicit user-skill name conflict for any missing entry.
 4. Select `/doctor` from the menu and send it. Confirm the candidate router version, slash-discovery status, and credential/runtime health. `/router doctor` must return the same health receipt.
 5. Select `/models` from the menu and send it. Confirm the list ends with an explicit switch instruction.
-6. Paste one listed `vendor/model` ID by itself and send it.
+6. Paste one catalog `vendor/model` ID by itself and send it. Repeat with an ID that is in the live catalog but outside the packaged shortlist (find one via `/models search`); it must switch with the same receipt shape.
 7. Send `/provider`. Confirm the exact provider and model.
 8. Ask `What provider and model are you using?` Confirm the answer agrees with `/provider` and does not deny the router controls.
 9. Ask `Reply with exactly FRESH_BOT_TEXT_OK and nothing else.` Confirm one reply appears—no duplicate follow-up bubbles.

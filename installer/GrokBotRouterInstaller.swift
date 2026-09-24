@@ -183,6 +183,7 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
     private let anthropicModelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let xaiModelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let openRouterKeyField = NSSecureTextField()
+    private let customModelItemTitle = "Custom model ID…"
     private let installButton = NSButton(title: "Install Router", target: nil, action: nil)
     private let authButton = NSButton(title: "Start Codex Sign-in", target: nil, action: nil)
     private let anthropicAuthButton = NSButton(title: "Start Anthropic Sign-in", target: nil, action: nil)
@@ -296,6 +297,11 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
             "grok-4.20",
             "grok-4.20-multi-agent"
         ])
+        for popup in [codexModelPopup, openRouterModelPopup, anthropicModelPopup, xaiModelPopup] {
+            popup.addItem(withTitle: customModelItemTitle)
+            popup.target = self
+            popup.action = #selector(modelPopupChanged(_:))
+        }
         openRouterKeyField.placeholderString = "OpenRouter API key (stored only in Grok Bot Secrets)"
 
         codexCheckbox.font = .systemFont(ofSize: 14, weight: .medium)
@@ -491,6 +497,42 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
         row.spacing = 12
         control.widthAnchor.constraint(greaterThanOrEqualToConstant: 500).isActive = true
         return row
+    }
+
+    @objc private func modelPopupChanged(_ sender: NSPopUpButton) {
+        guard sender.titleOfSelectedItem == customModelItemTitle else { return }
+        let isOpenRouter = sender === openRouterModelPopup
+        let alert = NSAlert()
+        alert.messageText = isOpenRouter ? "Use any OpenRouter model" : "Use any model ID"
+        alert.informativeText = isOpenRouter
+            ? "Type any vendor/model ID from /models search in Grok Bot, e.g. deepseek/deepseek-v4-pro."
+            : "Type any model ID for this provider."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 22))
+        field.placeholderString = isOpenRouter ? "vendor/model" : "model-id"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Use model")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            sender.selectItem(at: 0)
+            return
+        }
+        let typed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let wellFormed = !typed.isEmpty
+            && typed.rangeOfCharacter(from: .whitespacesAndNewlines) == nil
+            && typed.range(of: "^[A-Za-z0-9][A-Za-z0-9._:/+-]*$", options: .regularExpression) != nil
+            && (!isOpenRouter || typed.contains("/"))
+        guard wellFormed else {
+            sender.selectItem(at: 0)
+            let warning = NSAlert()
+            warning.alertStyle = .warning
+            warning.messageText = "That model ID does not look valid"
+            warning.informativeText = isOpenRouter ? "Use vendor/model format." : "Use the provider's model ID format."
+            warning.addButton(withTitle: "OK")
+            warning.runModal()
+            return
+        }
+        if sender.item(withTitle: typed) == nil { sender.addItem(withTitle: typed) }
+        sender.selectItem(withTitle: typed)
     }
 
     @objc private func providerSelectionChanged() {

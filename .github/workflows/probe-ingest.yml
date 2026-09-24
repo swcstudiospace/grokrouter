@@ -1,0 +1,84 @@
+name: Ingest host probe
+
+# Scaffolds support for a new Grok Bot version from a REAL read-only host
+# probe. A maintainer pastes the complete scripts/host-probe.py output plus
+# one reviewed anchor per line; the workflow validates the probe (stock host,
+# exact anchor counts, no router marker), writes patch/manifests/<version>.json,
+# updates the installer version lists, runs the patch tests, and opens a
+# DRAFT PR. Merging still requires `npm test` and the full live fresh-Bot
+# gate in docs/FRESH-BOT-ACCEPTANCE.md recorded in docs/TEST-MATRIX.md.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "New Grok Bot version exactly as probed (for example 0.58.0)"
+        required: true
+        type: string
+      probe_json:
+        description: "Complete host-probe.py output between GROKROUTER_HOST_PROBE_BEGIN/END"
+        required: true
+        type: string
+      anchors:
+        description: "Reviewed required anchors, one exact source line per line"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: "3.13"
+      - name: Scaffold the manifest from the probe
+        env:
+          PROBE_JSON: ${{ inputs.probe_json }}
+          PROBE_ANCHORS: ${{ inputs.anchors }}
+          NEW_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$PROBE_JSON" > /tmp/probe.json
+          anchor_args=()
+          while IFS= read -r line; do
+            [[ -n "$line" ]] && anchor_args+=(--anchor "$line")
+          done <<< "$PROBE_ANCHORS"
+          python3 scripts/new-manifest-from-probe.py \
+            --version "$NEW_VERSION" --probe /tmp/probe.json "${anchor_args[@]}"
+      - name: Run the patch and version-tracking tests
+        run: |
+          set -euo pipefail
+          python3 -m unittest tests/test_patch.py tests/test_version_tracking.py
+          bash -n scripts/install-macos.sh
+          bash -n remote/install.sh
+      - name: Open a draft PR with the live-acceptance checklist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          branch="bot/support-grokbot-$NEW_VERSION"
+          git config user.name "grokrouter-bot"
+          git config user.email "grokrouter-bot@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add patch/manifests/"$NEW_VERSION".json \
+            installer/GrokBotRouterInstaller.swift \
+            scripts/install-macos.sh remote/install.sh
+          git commit -m "Draft support for Grok Bot $NEW_VERSION from a live host probe" \
+            -m "Automated scaffold from a reviewed host-probe report. DO NOT MERGE until npm test and docs/FRESH-BOT-ACCEPTANCE.md pass on a live $NEW_VERSION Bot computer and docs/TEST-MATRIX.md records the result."
+          git push --set-upstream origin "$branch"
+          gh pr create --draft --title "Draft: support Grok Bot $NEW_VERSION" --body "$(cat <<EOF
+          Automated scaffold from a reviewed \`scripts/host-probe.py\` report. The stock hash, byte count, and exact-once anchors come from the live $NEW_VERSION host; no gate was loosened.
+
+          ## Do-not-merge checklist
+
+          - [ ] \`npm test\` passes with this manifest.
+          - [ ] Full fresh-Bot procedure in \`docs/FRESH-BOT-ACCEPTANCE.md\` passes on Grok Bot $NEW_VERSION (install → restore → reinstall → new Bot → \`/router doctor\` → \`/provider\` → normal turn).
+          - [ ] Result recorded in \`docs/TEST-MATRIX.md\` with the visible evidence and redacted audit receipt.
+          - [ ] README supported-version badge/message updated only after the gate above passes.
+          EOF
+          )"

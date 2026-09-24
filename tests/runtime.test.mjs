@@ -1279,7 +1279,7 @@ test("a brand-new Bot accepts the exact model workflow and forgiving screenshot 
       sessionOptions: { botId: "brand-new-bot" },
     }, { fetchImpl: neverInfer });
     assert.match(listed.text, /openai\/gpt-5\.6-luna/);
-    assert.match(listed.text, /paste one listed vendor\/model ID by itself/);
+    assert.match(listed.text, /paste any catalog vendor\/model ID by itself/);
 
     const pasted = await runTurn({
       config,
@@ -1341,7 +1341,7 @@ test("a brand-new Bot accepts the exact model workflow and forgiving screenshot 
       ["/router foo", /Router command not understood/],
       ["/provider open router", /Router command not understood/],
       ["/reasoning MAX", /Router command not understood/],
-      ["unlisted/model-id", /not in this bot's configured list/],
+      ["unlisted/model-id", /not in the known OpenRouter list/],
     ];
     for (const [input, expected] of nearMisses) {
       const handled = await runTurn({
@@ -1352,6 +1352,59 @@ test("a brand-new Bot accepts the exact model workflow and forgiving screenshot 
       assert.match(handled.text, expected);
       assert.equal(handled.control, true);
     }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("pasting any catalog model ID switches beyond the packaged shortlist", async () => {
+  const root = await mkdtemp(join(tmpdir(), "grokbot-router-catalog-paste-"));
+  const config = {
+    provider: "openrouter",
+    providers: ["openrouter"],
+    openRouterModel: "anthropic/claude-sonnet-4.6",
+    openRouterModels: ["anthropic/claude-sonnet-4.6"],
+    openRouterCatalogPath: join(root, "catalog.json"),
+    statePath: join(root, "states.json"),
+    auditPath: join(root, "audit.jsonl"),
+  };
+  await writeFile(config.openRouterCatalogPath, JSON.stringify({
+    fetchedAt: Date.now(),
+    models: [
+      { id: "anthropic/claude-sonnet-4.6", name: "Anthropic: Claude Sonnet", contextLength: 0, free: false, tools: true },
+      { id: "deepseek/deepseek-v4-pro", name: "DeepSeek V4 Pro", contextLength: 0, free: false, tools: true },
+      { id: "google/gemma-4-31b-it:free", name: "Google: Gemma (free)", contextLength: 0, free: true, tools: false },
+    ],
+  }));
+  // neverInfer proves the paste path stays offline: it may read the cached
+  // catalog but must never reach provider inference for a control.
+  const neverInfer = async () => { throw new Error("control input leaked to model inference"); };
+  try {
+    const switched = await runTurn({
+      config,
+      messages: [user("deepseek/deepseek-v4-pro")],
+      sessionOptions: { botId: "catalog-paste-bot" },
+    }, { fetchImpl: neverInfer });
+    assert.equal(switched.model, "deepseek/deepseek-v4-pro");
+    assert.match(switched.text, /Switched this bot/);
+    assert.equal(switched.control, true);
+
+    const noTools = await runTurn({
+      config,
+      messages: [user("google/gemma-4-31b-it:free")],
+      sessionOptions: { botId: "catalog-paste-bot" },
+    }, { fetchImpl: neverInfer });
+    assert.equal(noTools.model, "google/gemma-4-31b-it:free");
+    assert.match(noTools.text, /does not advertise native tool calling/);
+
+    const unknown = await runTurn({
+      config,
+      messages: [user("nobody/nothing-real")],
+      sessionOptions: { botId: "catalog-paste-bot" },
+    }, { fetchImpl: neverInfer });
+    assert.match(unknown.text, /not in the known OpenRouter list/);
+    assert.match(unknown.text, /\/models refresh/);
+    assert.equal(unknown.control, true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

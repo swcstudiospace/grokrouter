@@ -229,7 +229,7 @@ Type these into a Bot's normal Grok chat box:
 | `/models free` | List the free OpenRouter models from the live catalog. |
 | `/models search <text>` | Search every model your provider offers. |
 | `/models refresh` | Re-read the provider's model list right now. |
-| Paste a listed `vendor/model` ID | Switch this Bot to that model. |
+| Paste any catalog `vendor/model` ID | Switch this Bot to that model. |
 | `/provider` | Show which provider and model this Bot is using. |
 | `/reasoning low\|medium\|high\|xhigh` | Change Codex thinking effort. |
 | `/router reset` | Start a fresh provider thread without deleting the Grok conversation. |
@@ -433,7 +433,7 @@ openai/gpt-5.6-luna
 /provider
 ```
 
-The bare model ID is intentional: copy any listed OpenRouter model from `/models` and paste it directly into the composer. The final receipt must name OpenRouter and `openai/gpt-5.6-luna`.
+The bare model ID is intentional: copy any OpenRouter model from `/models search` and paste it directly into the composer. The final receipt must name OpenRouter and `openai/gpt-5.6-luna`.
 
 This is the minimum proof, not the whole release gate. The authoritative sequence is [Fresh-Bot Acceptance](docs/FRESH-BOT-ACCEPTANCE.md).
 
@@ -459,7 +459,7 @@ Type these into Grok Bot's normal composer. The installer publishes user-invocab
 | `/model sol` | Select the Codex `gpt-5.6-sol` alias |
 | `/model anthropic/claude-sonnet-4.6` | Select a specific OpenRouter model |
 | `/models openai/gpt-5.6-luna` | Forgiving plural alias that switches models |
-| `openai/gpt-5.6-luna` | Paste a listed OpenRouter model ID by itself |
+| `openai/gpt-5.6-luna` | Paste any catalog OpenRouter model ID by itself |
 | `/reasoning minimal\|low\|medium\|high\|xhigh` | Change Codex reasoning effort |
 | `/router reset` | Start a fresh provider thread without deleting the Grok transcript |
 | `/router doctor` | Report runtime, patch, provider, credential health, and recent failures |
