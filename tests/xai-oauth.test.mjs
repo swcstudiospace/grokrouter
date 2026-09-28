@@ -60,8 +60,12 @@ test("device login prints the verification code, honors slow_down, and stores to
     const stored = await loadCredentials(config);
     assert.equal(stored.access, "access-secret");
     assert.equal(stored.expiresAt, 1_000_000 + 3_600_000);
-    const mode = (await stat(config.xaiCredentialsPath)).mode & 0o777;
-    assert.equal(mode, 0o600);
+    // Windows has no POSIX mode bits (Node reports 0o666 there); the runtime
+    // itself runs on the Linux Bot computer, where owner-only must hold.
+    if (process.platform !== "win32") {
+      const mode = (await stat(config.xaiCredentialsPath)).mode & 0o777;
+      assert.equal(mode, 0o600);
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

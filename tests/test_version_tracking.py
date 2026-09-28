@@ -1,10 +1,12 @@
-"""Version-tracking pipeline tests: feed check, probe ingest, gate consistency.
+"""Version-tracking pipeline tests: feed check, probe ingest, auto-probe, gates.
 
-Covers scripts/check-grokbot-version.py and scripts/new-manifest-from-probe.py,
-plus the standing contract that every shipped manifest version appears in the
-hardcoded installer version lists (so a future scaffold cannot silently miss
-one of them).
+Covers scripts/check-grokbot-version.py, scripts/new-manifest-from-probe.py,
+and scripts/auto-probe.py (the unattended runner probe), plus the standing
+contract that every shipped manifest version appears in the hardcoded
+installer version lists (so a future scaffold cannot silently miss one).
 """
+import hashlib
+import importlib.util
 import json
 import re
 import subprocess
@@ -16,6 +18,11 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CHECK_SCRIPT = PROJECT_ROOT / "scripts" / "check-grokbot-version.py"
 INGEST_SCRIPT = PROJECT_ROOT / "scripts" / "new-manifest-from-probe.py"
+AUTO_PROBE_SCRIPT = PROJECT_ROOT / "scripts" / "auto-probe.py"
+_PATCH_TESTS = importlib.util.spec_from_file_location("patch_tests", PROJECT_ROOT / "tests" / "test_patch.py")
+patch_tests = importlib.util.module_from_spec(_PATCH_TESTS)
+assert _PATCH_TESTS.loader is not None
+_PATCH_TESTS.loader.exec_module(patch_tests)
 
 SWIFT_SNIPPET = """\
 private let supportedGrokVersions = ["0.30.0", "0.44.0"]
@@ -173,6 +180,87 @@ class ProbeIngestTests(unittest.TestCase):
     def test_ingest_refuses_a_probe_for_another_version(self):
         result = run_ingest(self.root, make_probe(), "0.59.0", ANCHORS_044)
         self.assertNotEqual(result.returncode, 0)
+
+
+class AutoProbeTests(unittest.TestCase):
+    """The unattended runner probe drafts support only for a proven new build."""
+
+    # A 0.44.0-dialect host that names 0.61.0, like a real new build would.
+    NEW_HOST = 'const appVersion = "0.61.0";\n' + patch_tests.MultiVersionManifestTests.NEW_SOURCE
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name) / "repo"
+        make_skeleton(self.root)
+        # Shrink the newest shipped band so the small fixture host fits it.
+        newest = self.root / "patch" / "manifests" / "0.44.0.json"
+        manifest = json.loads(newest.read_text())
+        manifest["anchorVerifiedHosts"].update({"minBytes": 100, "maxBytes": 100000})
+        newest.write_text(json.dumps(manifest))
+        self.host = Path(self.temporary.name) / "live-host.cjs"
+        self.out = Path(self.temporary.name) / "out"
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def run_probe(self, source: str, version: str = "0.61.0") -> dict:
+        self.host.write_text(source)
+        result = subprocess.run(
+            [sys.executable, str(AUTO_PROBE_SCRIPT), "--version", version, "--host", str(self.host),
+             "--root", str(self.root), "--out", str(self.out)],
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.host.read_text(), source, "the live host must never change")
+        return json.loads((self.out / "status.json").read_text())
+
+    def test_new_build_is_proven_and_feeds_the_real_ingest(self):
+        status = self.run_probe(self.NEW_HOST)
+        self.assertEqual(status["status"], "ready", status["reason"])
+        self.assertEqual(status["anchors"], ANCHORS_044)
+        digest = hashlib.sha256(self.NEW_HOST.encode()).hexdigest()
+        self.assertEqual(status["probe"]["sha256"], digest)
+        # Public logs: the handoff carries no host source beyond the anchors.
+        self.assertEqual(set(status["probe"]["candidates"]), {"routerMarker"})
+        self.assertNotIn("sessionContext", status["probe"])
+        self.assertNotIn("identityScope", status["probe"])
+        self.assertFalse((self.root / "patch" / "manifests" / "0.61.0.json").exists())
+        result = run_ingest(self.root, status["probe"], "0.61.0", status["anchors"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        written = json.loads((self.root / "patch" / "manifests" / "0.61.0.json").read_text())
+        self.assertEqual(written["stockHosts"], [{"sha256": digest, "bytes": len(self.NEW_HOST.encode())}])
+
+    def test_a_host_that_is_already_shipped_waits_for_the_box_to_update(self):
+        newest = self.root / "patch" / "manifests" / "0.44.0.json"
+        manifest = json.loads(newest.read_text())
+        manifest["stockHosts"].append({
+            "sha256": hashlib.sha256(self.NEW_HOST.encode()).hexdigest(),
+            "bytes": len(self.NEW_HOST.encode())})
+        newest.write_text(json.dumps(manifest))
+        self.assertEqual(self.run_probe(self.NEW_HOST)["status"], "box-not-updated")
+
+    def test_a_host_without_the_new_version_hint_is_refused(self):
+        status = self.run_probe(patch_tests.MultiVersionManifestTests.NEW_SOURCE)
+        self.assertEqual(status["status"], "version-unconfirmed")
+        self.assertIsNone(status["probe"])
+
+    def test_moved_anchors_are_never_guessed(self):
+        source = self.NEW_HOST.replace("const mockResponse = options2.agentMockResponse;",
+                                       "const mockResponse = readMock(options2);")
+        status = self.run_probe(source)
+        self.assertEqual(status["status"], "anchors-moved")
+        self.assertEqual(status["anchors"], [])
+
+    def test_a_patched_bot_computer_is_not_stock(self):
+        status = self.run_probe(self.NEW_HOST + "// GROKBOT_MODEL_ROUTER_V45\n")
+        self.assertEqual(status["status"], "not-stock")
+
+    def test_anchors_that_count_once_but_do_not_patch_are_refused(self):
+        source = self.NEW_HOST.replace(
+            "createSession(onRequestId, sessionOptions) {\n",
+            "createSession(onRequestId, sessionOptions) {\n      trace();\n")
+        status = self.run_probe(source)
+        self.assertEqual(status["status"], "patch-round-trip-failed")
+        self.assertIsNone(status["probe"])
 
 
 class ShippedGateConsistencyTests(unittest.TestCase):

@@ -1,0 +1,4 @@
+self-hosted-runner:
+  # Runner inside a dedicated stock Grok Bot computer (docs/VERSION-TRACKING.md).
+  labels:
+    - grokbot-box

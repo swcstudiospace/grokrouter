@@ -1,10 +1,21 @@
 name: Grok Bot version watch
 
-# Polls the official Grok Bot stable feed once a day and opens a tracking
-# issue when the feed reports a version with no compatibility manifest.
-# It never edits a manifest or claims support; it only asks a human with a
-# Mac to run the read-only host probe. The probe output then feeds the
-# "Ingest host probe" workflow, which scaffolds the manifest draft.
+# Polls the official Grok Bot stable feed once a day. When the feed reports a
+# version with no compatibility manifest it opens (or reuses) a tracking issue
+# and, when the self-hosted Bot-computer runner is enabled, drafts support by
+# itself:
+#
+#   watch (GitHub-hosted)  -> feed check, tracking issue
+#   probe (self-hosted, inside a dedicated never-patched Grok Bot computer)
+#                          -> scripts/auto-probe.py proves the live host
+#   ingest (probe-ingest.yml, GitHub-hosted)
+#                          -> manifest scaffold, patch tests, draft PR, CI
+#   report                 -> explains on the issue why the probe stopped
+#
+# Enable the probe by registering the runner with the `grokbot-box` label and
+# setting the repository variable GROKBOT_PROBE_RUNNER=true; see
+# docs/VERSION-TRACKING.md. Nothing here merges, tags, or claims support: the
+# draft PR still needs the live fresh-Bot gate.
 on:
   schedule:
     - cron: "23 9 * * *"
@@ -12,11 +23,18 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   watch:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      exit: ${{ steps.check.outputs.exit }}
+      version: ${{ steps.check.outputs.version }}
+      issue: ${{ steps.issue.outputs.number }}
+      drafted: ${{ steps.drafted.outputs.drafted }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
@@ -32,7 +50,8 @@ jobs:
           version="$(python3 -c "import json;print(json.load(open('/tmp/version-report.json'))['feedVersion'])" 2>/dev/null)"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           exit 0
-      - name: Open or update the tracking issue for a new Grok Bot version
+      - name: Open or reuse the tracking issue for a new Grok Bot version
+        id: issue
         if: steps.check.outputs.exit == '2'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -42,6 +61,10 @@ jobs:
           title="Grok Bot $NEW_VERSION has no router manifest"
           body="$(cat <<EOF
           The official stable feed now reports **Grok Bot $NEW_VERSION**, which has no manifest in \`patch/manifests/\`. GrokRouter refuses to install there until a real host probe lands. This issue tracks that work; it does not loosen any gate.
+
+          ## Automatic path
+
+          When the self-hosted Bot-computer runner is enabled (\`GROKBOT_PROBE_RUNNER=true\`), this workflow probes that Bot computer every day and opens the draft PR itself once the host is proven to be $NEW_VERSION. If it cannot proceed it comments here with the reason; the manual path below always works.
 
           ## 1. Probe the untouched stock host (on a Mac with Grok Bot $NEW_VERSION)
 
@@ -65,6 +88,113 @@ jobs:
           existing="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')"
           if [[ -n "$existing" ]]; then
             echo "Tracking issue #$existing already open; leaving it in place."
+            echo "number=$existing" >> "$GITHUB_OUTPUT"
           else
-            gh issue create --title "$title" --body "$body"
+            url="$(gh issue create --title "$title" --body "$body")"
+            echo "number=${url##*/}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Skip the probe when a draft PR branch already exists
+        id: drafted
+        if: steps.check.outputs.exit == '2'
+        env:
+          NEW_VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          if git ls-remote --exit-code --heads origin "refs/heads/bot/support-grokbot-$NEW_VERSION" >/dev/null; then
+            echo "Draft support branch for $NEW_VERSION already exists; not probing again."
+            echo "drafted=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "drafted=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  probe:
+    needs: watch
+    if: needs.watch.outputs.exit == '2' && needs.watch.outputs.drafted == 'false' && vars.GROKBOT_PROBE_RUNNER == 'true'
+    # The runner lives inside a dedicated Grok Bot computer that never gets
+    # GrokRouter installed, so its host is the untouched stock build.
+    runs-on: [self-hosted, grokbot-box]
+    timeout-minutes: 20
+    # A Bot computer that is asleep leaves the job queued; a newer daily run
+    # replaces it instead of piling up.
+    concurrency:
+      group: grokbot-box-probe
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    outputs:
+      status: ${{ steps.probe.outputs.status }}
+      reason: ${{ steps.probe.outputs.reason }}
+      probe_json: ${{ steps.probe.outputs.probe_json }}
+      anchors: ${{ steps.probe.outputs.anchors }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prove the live host on a scratch copy
+        id: probe
+        env:
+          NEW_VERSION: ${{ needs.watch.outputs.version }}
+        # Public repository: logs are public, so auto-probe.py prints only a
+        # status line and hands off digest, size, version hints, and anchors.
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/grokrouter-auto-probe"
+          python3 scripts/auto-probe.py --version "$NEW_VERSION" --out "$out"
+          python3 - "$out/status.json" <<'EOF'
+          import json, os, secrets, sys
+          status = json.load(open(sys.argv[1]))
+          delimiter = "EOF_" + secrets.token_hex(8)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"status={status['status']}\n")
+              output.write(f"reason={status['reason']}\n")
+              output.write(f"probe_json={json.dumps(status['probe'] or {}, separators=(',', ':'))}\n")
+              output.write(f"anchors<<{delimiter}\n" + "\n".join(status["anchors"]) + f"\n{delimiter}\n")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write(f"Automatic probe for Grok Bot {status['version']}: `{status['status']}` {status['reason']}\n")
+          EOF
+      - name: Remove the scratch copy
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/grokrouter-auto-probe"
+
+  ingest:
+    needs: [watch, probe]
+    if: needs.probe.outputs.status == 'ready'
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    uses: ./.github/workflows/probe-ingest.yml
+    with:
+      version: ${{ needs.watch.outputs.version }}
+      probe_json: ${{ needs.probe.outputs.probe_json }}
+      anchors: ${{ needs.probe.outputs.anchors }}
+      tracking_issue: ${{ needs.watch.outputs.issue }}
+
+  report:
+    needs: [watch, probe]
+    if: always() && needs.watch.outputs.exit == '2' && contains(fromJSON('["success", "failure"]'), needs.probe.result) && needs.probe.outputs.status != 'ready'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Explain on the tracking issue why no draft PR was opened
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE: ${{ needs.watch.outputs.issue }}
+          NEW_VERSION: ${{ needs.watch.outputs.version }}
+          STATUS: ${{ needs.probe.outputs.status || 'probe-job-failed' }}
+          REASON: ${{ needs.probe.outputs.reason || 'the self-hosted probe job failed before reporting; see the workflow run' }}
+        run: |
+          set -euo pipefail
+          # One comment per distinct result: the marker carries a signature of
+          # status and reason, so a daily "still waiting" never repeats.
+          signature="$(printf '%s\n%s' "$STATUS" "$REASON" | sha256sum | cut -c1-16)"
+          marker="<!-- grokrouter-auto-probe $signature -->"
+          body="$marker"$'\n'"**Automatic probe for Grok Bot $NEW_VERSION: \`$STATUS\`**"$'\n\n'"$REASON"
+          last="$(gh issue view "$ISSUE" --json comments \
+            --jq '[.comments[] | select(.body | startswith("<!-- grokrouter-auto-probe "))] | last | .body // ""')"
+          if [[ "$last" == "$marker"* ]]; then
+            echo "Tracking issue #$ISSUE already carries this probe result."
+          else
+            gh issue comment "$ISSUE" --body "$body"
           fi

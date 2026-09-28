@@ -1,11 +1,14 @@
 name: Ingest host probe
 
 # Scaffolds support for a new Grok Bot version from a REAL read-only host
-# probe. A maintainer pastes the complete scripts/host-probe.py output plus
-# one reviewed anchor per line; the workflow validates the probe (stock host,
-# exact anchor counts, no router marker), writes patch/manifests/<version>.json,
-# updates the installer version lists, runs the patch tests, and opens a
-# DRAFT PR. Merging still requires `npm test` and the full live fresh-Bot
+# probe, then runs the patch tests and opens a DRAFT PR. Two callers share it:
+# - a maintainer dispatches it with the complete scripts/host-probe.py output
+#   plus one reviewed anchor per line;
+# - version-watch.yml calls it with the sanitized probe that
+#   scripts/auto-probe.py produced on the self-hosted Bot-computer runner.
+# The workflow validates the probe (stock host, exact anchor counts, no router
+# marker), writes patch/manifests/<version>.json, and updates the installer
+# version lists. Merging still requires `npm test` and the full live fresh-Bot
 # gate in docs/FRESH-BOT-ACCEPTANCE.md recorded in docs/TEST-MATRIX.md.
 on:
   workflow_dispatch:
@@ -22,10 +25,31 @@ on:
         description: "Reviewed required anchors, one exact source line per line"
         required: true
         type: string
+      tracking_issue:
+        description: "Optional version-watch tracking issue number to reference"
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      probe_json:
+        required: true
+        type: string
+      anchors:
+        required: true
+        type: string
+      tracking_issue:
+        required: false
+        type: string
 
 permissions:
   contents: write
   pull-requests: write
+  # A PR opened with GITHUB_TOKEN triggers no pull_request workflows, so CI
+  # is dispatched explicitly on the branch (workflow_dispatch is exempt).
+  actions: write
 
 jobs:
   ingest:
@@ -59,6 +83,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEW_VERSION: ${{ inputs.version }}
+          TRACKING_ISSUE: ${{ inputs.tracking_issue }}
         run: |
           set -euo pipefail
           branch="bot/support-grokbot-$NEW_VERSION"
@@ -71,8 +96,12 @@ jobs:
           git commit -m "Draft support for Grok Bot $NEW_VERSION from a live host probe" \
             -m "Automated scaffold from a reviewed host-probe report. DO NOT MERGE until npm test and docs/FRESH-BOT-ACCEPTANCE.md pass on a live $NEW_VERSION Bot computer and docs/TEST-MATRIX.md records the result."
           git push --set-upstream origin "$branch"
-          gh pr create --draft --title "Draft: support Grok Bot $NEW_VERSION" --body "$(cat <<EOF
-          Automated scaffold from a reviewed \`scripts/host-probe.py\` report. The stock hash, byte count, and exact-once anchors come from the live $NEW_VERSION host; no gate was loosened.
+          tracking=""
+          if [[ -n "$TRACKING_ISSUE" ]]; then
+            tracking="Tracking issue: #$TRACKING_ISSUE"
+          fi
+          gh pr create --draft --head "$branch" --title "Draft: support Grok Bot $NEW_VERSION" --body "$(cat <<EOF
+          Automated scaffold from a \`scripts/host-probe.py\` report of the untouched $NEW_VERSION host. The stock hash, byte count, and exact-once anchors come from that live host; no gate was loosened. $tracking
 
           ## Do-not-merge checklist
 
@@ -82,3 +111,4 @@ jobs:
           - [ ] README supported-version badge/message updated only after the gate above passes.
           EOF
           )"
+          gh workflow run ci.yml --ref "$branch"
