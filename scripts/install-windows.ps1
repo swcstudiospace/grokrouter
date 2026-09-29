@@ -201,19 +201,23 @@
         $staging = Join-Path $installParent "$installLeaf.installing-$stamp"
         $backupName = "$installLeaf.previous-$stamp"
         $backup = Join-Path $installParent $backupName
-        # Copy, not move: the build output may be a checkout's build folder, and
-        # the temp directory can sit on a different volume from the install.
-        Copy-Item -LiteralPath $builtApp -Destination $staging -Recurse
-
         $hadPrevious = Test-Path -LiteralPath $installDir
-        if ($hadPrevious) {
-            Stop-InstalledGrokRouter $installDir
-            Move-Item -LiteralPath $installDir -Destination $backup
-        }
+        $movedPrevious = $false
         try {
+            # Copy, not move: the build output may be a checkout's build folder, and
+            # the temp directory can sit on a different volume from the install.
+            Copy-Item -LiteralPath $builtApp -Destination $staging -Recurse
+            if ($hadPrevious) {
+                Stop-InstalledGrokRouter $installDir
+                Move-Item -LiteralPath $installDir -Destination $backup
+                $movedPrevious = $true
+            }
             Move-Item -LiteralPath $staging -Destination $installDir
         } catch {
-            if ($hadPrevious) { Move-Item -LiteralPath $backup -Destination $installDir }
+            # Any failed step leaves the previous install where it was and no staging copy.
+            if ($movedPrevious -and -not (Test-Path -LiteralPath $installDir)) {
+                Move-Item -LiteralPath $backup -Destination $installDir
+            }
             Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
             throw
         }

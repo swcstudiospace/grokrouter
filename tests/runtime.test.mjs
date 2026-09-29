@@ -2622,7 +2622,7 @@ test("native memory extraction and episode summary preserve Bot state and never 
   const previous = process.env.OPENROUTER_API_KEY;
   process.env.OPENROUTER_API_KEY = TEST_OPENROUTER_KEY;
   try {
-    for (const provider of ["codex", "openrouter"]) {
+    for (const provider of ["codex", "openrouter", "anthropic"]) {
       const sessionOptions = { botId: `native-text-${provider}`, grokBotRouterControlText: "/provider openrouter" };
       const config = { provider, providers: [provider], stateDirectory: join(root, provider), auditPath: join(root, `${provider}.jsonl`) };
       const seed = { config, messages: [user("/provider")], sessionOptions: { botId: sessionOptions.botId } };
@@ -2639,6 +2639,7 @@ test("native memory extraction and episode summary preserve Bot state and never 
         const deps = {
           fetchImpl: async (_, options) => {
             called++;
+            assert.equal(provider, "openrouter");
             const body = JSON.parse(options.body);
             assert.deepEqual(body.messages, messages);
             assert.equal(body.tools, undefined);
@@ -2654,6 +2655,7 @@ test("native memory extraction and episode summary preserve Bot state and never 
               assert.equal(options.webSearchMode, "disabled");
               return { id: "discarded-helper-thread", run: async (prompt, options) => {
                 called++;
+                assert.equal(provider, "codex");
                 assert.match(prompt, /native host text-processing task/);
                 assert.doesNotMatch(prompt, /native shell, file editing/);
                 assert.equal(options.outputSchema.properties.toolCalls.maxItems, 0);
@@ -2661,6 +2663,15 @@ test("native memory extraction and episode summary preserve Bot state and never 
               }};
             },
           }),
+          anthropicQueryFactory: () => ({ prompt, options }) => (async function* () {
+            called++;
+            assert.equal(provider, "anthropic");
+            assert.deepEqual(options.tools, []);
+            assert.equal(options.maxTurns, 1);
+            assert.equal(options.resume, undefined);
+            assert.match(prompt, /native host text-processing task/);
+            yield { type: "result", subtype: "success", session_id: "discarded-helper-session", result: JSON.stringify({ text: "NONE", toolCalls: [{ toolName: "Shell", argumentsJson: "{}" }] }), usage: {} };
+          })(),
         };
         const output = await runTurn({config,messages,tools:[{name:"SendToUser",parameters:{type:"object"}}],sessionOptions:{...sessionOptions,...flags}},deps);
         assert.equal(called,1);

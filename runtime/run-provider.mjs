@@ -1853,7 +1853,7 @@ async function createAnthropicQuery() {
 export async function runAnthropic(config, messages, tools, queryFactory = null) {
   const query = queryFactory ? queryFactory() : await createAnthropicQuery();
   const model = config.anthropicModel || "claude-sonnet-5";
-  const resuming = Boolean(config.anthropicSessionId);
+  const resuming = !config.nativeTextTask && Boolean(config.anthropicSessionId);
   const prompt = anthropicPrompt(config, messages, tools, resuming);
   const images = await codexImages(messages, config);
   const promptText = images.length
@@ -1867,6 +1867,8 @@ export async function runAnthropic(config, messages, tools, queryFactory = null)
     allowDangerouslySkipPermissions: true,
     ...(config.anthropicExecutablePath ? { pathToClaudeCodeExecutable: config.anthropicExecutablePath } : {}),
     ...(resuming ? { resume: config.anthropicSessionId } : {}),
+    // A native text task is data processing: no Claude Code tools, one turn.
+    ...(config.nativeTextTask ? { tools: [], maxTurns: 1 } : {}),
     env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: `grokrouter/${ROUTER_VERSION}` },
   };
   const run = async (runOptions) => {
@@ -1894,6 +1896,7 @@ export async function runAnthropic(config, messages, tools, queryFactory = null)
     outcome = await run(fresh);
   }
   const parsed = parseCodexResult(outcome.finalText);
+  if (config.nativeTextTask) parsed.toolCalls = [];
   if (!parsed.text && !parsed.toolCalls.length) throw new Error("Claude Agent SDK returned an empty response");
   return {
     ...parsed,
@@ -2758,18 +2761,20 @@ export async function runTurn(input, dependencies = {}) {
   const nativeTextTask = ["memory-extraction", "episode-summary"].includes(sessionOptions.grokBotRouterTextTask)
     ? sessionOptions.grokBotRouterTextTask : "";
   if (nativeTextTask) {
+    // Every provider field carries the Bot's model so the helper runs on the
+    // Bot's own provider, never on a provider that may not be installed.
     const taskConfig = {
-      ...config, nativeTextTask, codexThreadId: null,
+      ...config, nativeTextTask, codexThreadId: null, anthropicSessionId: null,
       codexModel: state.model, codexReasoning: state.reasoning,
       openRouterModel: state.model, openRouterReasoning: state.reasoning,
+      anthropicModel: state.model, anthropicReasoning: state.reasoning,
+      xaiModel: state.model, xaiReasoning: state.reasoning,
       adapterSessionId: `${state.sessionId}:${nativeTextTask}`,
     };
     const receipt = { task: nativeTextTask, sessionId: state.sessionId, provider: state.provider, model: state.model, toolNames: [] };
     await appendAudit(config, { event: "native_text_task_start", ...receipt });
     try {
-      const output = state.provider === "openrouter"
-        ? await runOpenRouter(taskConfig, messages, [], dependencies.fetchImpl)
-        : await runCodex(taskConfig, messages, [], dependencies.codexFactory);
+      const output = await runProvider(state.provider, taskConfig, messages, [], dependencies);
       if (output.emptyResponse) throw new Error("Native text task returned an empty response after one retry");
       await appendAudit(config, { event: "native_text_task_ok", ...receipt });
       // A helper never resumes or replaces the Bot's conversation thread,

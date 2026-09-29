@@ -16,7 +16,9 @@ HOST_REGISTRY_TOOL="$INSTALL_ROOT/bin/host-registry"
 # host-registry maps the recorded Grok Bot version to the patcher's manifest
 # and, for an opted-in unreviewed newer version, its explicit trust flag.
 VERSION_PATCH_TEXT="$("$HOST_REGISTRY_TOOL" patch-args)"
-mapfile -t VERSION_PATCH_ARGS <<< "$VERSION_PATCH_TEXT"
+# A read loop, not mapfile: the test suite also runs these under macOS bash 3.2.
+VERSION_PATCH_ARGS=()
+while IFS= read -r patch_arg; do VERSION_PATCH_ARGS+=("$patch_arg"); done <<< "$VERSION_PATCH_TEXT"
 UNREVIEWED_VERSION=""
 if [[ "${VERSION_PATCH_ARGS[2]:-}" == "--unreviewed-version" ]]; then
   UNREVIEWED_VERSION="${VERSION_PATCH_ARGS[3]}"
