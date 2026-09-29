@@ -32,6 +32,29 @@ In the same first Bot, prove each enabled provider with reversible, non-sensitiv
 - Confirm every suppressed host continuation produces a redacted `turn_suppressed` receipt with a specific reason. A silent audit gap is a failure.
 - Confirm provider tool-call IDs in the audit use the `grokbot-router-tool-` prefix instead of a provider-supplied raw identifier.
 
+## Unreviewed-version install
+
+Run this only on a Grok Bot strictly newer than every version in `compatibility/supported-apps.json`, on a Bot computer you are willing to restore. It is separate evidence and never makes that version reviewed.
+
+1. With **Allow unreviewed Grok Bot version (experimental)** off, start installation. It must refuse the version, name the checkbox and `docs/VERSION-TRACKING.md`, and change nothing.
+2. Confirm the checkbox changes nothing for a reviewed version (it still installs on its exact reviewed gate, with `HOSTTRUST=EXACT-ALLOWLIST`), and that an older or in-between unlisted version is still refused.
+3. Turn the checkbox on and install. The log must say `UNREVIEWED VERSION`, name the template manifest it used, and report the stock backup. Desktop Doctor must report `HOSTTRUST=UNREVIEWED-ANCHOR-VERIFIED` and an `UNREVIEWED VERSION` line.
+4. Complete the sixty-second control proof and the capability proof above in brand-new Bots.
+5. **Restore Stock Grok Bot**, then confirm the live host's SHA-256 and byte count equal the fingerprint recorded before installation, and that the router is disabled.
+6. If installation instead stops, confirm the host is unchanged and the report contains the full fingerprint with `PATCHANCHORS=` and `PATCHDRYRUN=`.
+
+Record the version, template manifest, host fingerprint, and each result in `docs/TEST-MATRIX.md` as unreviewed-version evidence only.
+
+## Windows
+
+Windows is a preview until this passes natively on each claimed architecture (x64, Arm64):
+
+1. On a clean Windows 10 or 11 account without Node.js or Git, run the pinned PowerShell command. It must list both `winget` lines and stop without changing anything.
+2. Install the prerequisites, run the command again, and confirm GrokRouter is built for the right architecture, installed under `%LOCALAPPDATA%\Programs\GrokRouter`, added to the Start Menu, and opened, with no administrator prompt.
+3. Run it a second time. It must replace the install and keep exactly one `GrokRouter.previous-<stamp>` folder.
+4. Repeat from an extracted source ZIP with **Install GrokRouter.cmd**.
+5. Complete install → **Restore stock** → reinstall, then the sixty-second control proof and capability proof in brand-new Bots, using **Check health** for the live adapter and stock backup.
+
 ## Release decision
 
 The candidate fails if the automatic greeting invokes a tool or errors, any command reaches the model as ordinary chat, a response is delivered more than once, state leaks between Bots, a permission receipt fails to resume its outstanding tool call, the visible receipt disagrees with the audit, a background child finishes without reviving the parent, or a claimed tool path lacks a real live result.

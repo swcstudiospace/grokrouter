@@ -1,3 +1,29 @@
+# GrokRouter 0.1.0-beta.48 — maintained fork (candidate)
+
+First release candidate from the maintained fork `swcstudiospace/grokrouter`. Pending live acceptance; the tag `source-v0.1.0-beta.48` is created only after the acceptance record passes.
+
+- **Upstream beta.47 merged.** Adds Grok Bot 0.36.0, exact reviewed stock-host trust for every reviewed version, previous-adapter reconstruction, hardened host recovery, and beta.47's child-completion, broker-delivery, memory/episode isolation, and Doctor fixes. Every fork feature is kept.
+- **Grok Bot 0.44.0 under exact per-version gates.** 0.44.0 is listed in `compatibility/supported-apps.json` with its own manifest and signed host registry, from a live 2026-09-07 probe. It is a reviewed host with live acceptance pending: beta.47's three patch seams have not yet been proven on a live 0.44.0 probe.
+- **Experimental opt-in for unreviewed Grok Bot versions.** Both installers have **Allow unreviewed Grok Bot version (experimental)**, off by default. It applies only to a version strictly newer than every reviewed one (for example 0.61.0). The host is accepted by structural verification only (no router marker, every anchor and patch seam exactly once, `node --check`, size band), backed up first, and reported as `HOSTTRUST=UNREVIEWED-ANCHOR-VERIFIED` with an `UNREVIEWED VERSION` line. A moved anchor stops the install before any change with a `PATCHANCHORS=`/`PATCHDRYRUN=` report. Restore Stock returns the backed-up host. Structural checks cannot prove that backup is genuine stock.
+- **New registry signing key.** The fork signs host registries with its own Ed25519 key (`compatibility/registry-public-key.pem`); all three registries are re-signed and upstream signatures are no longer trusted. Registry refresh downloads from this repository. Maintainers sign locally; the private key never enters the repository or CI.
+- **Live Codex model discovery.** Codex lists models through the pinned CLI's `codex debug models` (account refresh, then its bundled catalog), joining OpenRouter, xAI, and Anthropic discovery. Lists are cached for an hour with a live → cache → packaged fallback. The `/models` footer shows catalog freshness and `/router doctor` shows it per provider.
+- **Newest-family aliases.** `/model sonnet|opus|haiku|fable|sol|terra|luna|astra|grok` resolves to the newest model in that family in the cached catalog, with pinned fallbacks. New models need no GrokRouter release.
+- **Editable installer model fields.** Type any well-formed model ID (strictly validated) or pick a suggestion, including `anthropic/claude-sonnet-5.5` and `anthropic/claude-opus-5.5`.
+- **Native Windows PowerShell source installer.** `scripts/install-windows.ps1` and **Install GrokRouter.cmd** build GrokRouter locally from the tagged source for Windows 10/11 x64 or Arm64, install per-user without admin rights, and keep one previous install. Node.js 22.12+ and Git for Windows are named with `winget` commands but never auto-installed. CI now parses it and runs it twice.
+- **Install commands from this fork.** Both README commands and both source installers pin `swcstudiospace/grokrouter` at `source-v0.1.0-beta.48`; `scripts/verify-release.mjs` enforces that they match.
+- **Upgrades authenticated.** Installing over upstream beta.45, beta.46, or beta.47, or an earlier fork build, reconstructs the existing adapter byte-for-byte before using the stock backup. Per-Bot state, threads, and audit history are preserved.
+
+## Not yet verified live
+
+- Fresh-Bot acceptance of this candidate on 0.30.0 and 0.36.0.
+- A live 0.44.0 probe proving the three beta.47 patch seams, and 0.44.0 fresh-Bot acceptance.
+- A reviewed host probe for 0.58.0, 0.59.1, or 0.61.0.
+- The unreviewed-version opt-in on a live Bot computer.
+- Windows native install, restore, and fresh-Bot acceptance; the new Windows CI smoke has not run yet.
+- Live Codex account catalog refresh; Anthropic and xAI provider runs; live registry refresh with the new key.
+
+See [the verification matrix](docs/TEST-MATRIX.md).
+
 # GrokRouter 0.1.0-beta.47 — source prerelease
 
 - Restores exact reviewed host hash and byte-count verification. Structural diagnostics cannot authenticate a stock host.
@@ -17,7 +43,7 @@
 - Makes source tagging depend on CI and a versioned acceptance record tied to the candidate's source digest. Keeps the existing download link until the new tag is available.
 - Adds CodeQL analysis, release validation tests, and clearer compatibility/recovery documentation.
 
-The unchanged final Mac artifact passed all seven required live gates independently on official Grok Bot 0.30.0 and 0.36.0. Codex Sol and OpenRouter Claude completed real computer tools and returned actual native child results once. Published September 9, 2026, after the protected release workflow passed. [Download tagged source](https://github.com/promptadvisers/grokrouter/releases/tag/source-v0.1.0-beta.47). Windows remains a source preview; 0.44.0 and unreviewed host hashes remain unsupported. Provider/helper limitations and exact receipts are recorded in [the verification matrix](docs/TEST-MATRIX.md).
+The unchanged final Mac artifact passed all seven required live gates independently on official Grok Bot 0.30.0 and 0.36.0. Codex Sol and OpenRouter Claude completed real computer tools and returned actual native child results once. Upstream published the `source-v0.1.0-beta.47` tag September 9, 2026, after the protected release workflow passed; this fork merged it into beta.48. Windows remains a source preview; 0.44.0 and unreviewed host hashes remain unsupported in beta.47. Provider/helper limitations and exact receipts are recorded in [the verification matrix](docs/TEST-MATRIX.md).
 
 # Maintained fork changes after beta.46
 
