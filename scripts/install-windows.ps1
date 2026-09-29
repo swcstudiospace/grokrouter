@@ -155,7 +155,13 @@
             $installLock = New-Object IO.FileStream((Join-Path $installParent "$installLeaf.install.lock"),
                 [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None, 1, [IO.FileOptions]::DeleteOnClose)
         } catch {
-            Stop-Install "another GrokRouter installation into $installDir is already running"
+            $cause = $_.Exception
+            while ($cause.InnerException) { $cause = $cause.InnerException }
+            # Sharing/lock violation: 32 and 33 on Windows, EAGAIN (11) under .NET on Unix.
+            if ($cause -is [IO.IOException] -and (($cause.HResult -band 0xFFFF) -in 11, 32, 33)) {
+                Stop-Install "another GrokRouter installation into $installDir is already running"
+            }
+            Stop-Install "could not create the install lock in ${installParent}: $($cause.Message)"
         }
 
         $sourceRoot = $null
