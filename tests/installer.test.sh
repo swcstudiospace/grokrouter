@@ -45,6 +45,15 @@ PROVIDERS_FAILURE="$(ROUTER_INSTALL_ATTEMPT=PROV2 bash "$PROJECT_ROOT/remote/ins
 grep -q 'GROKROUTER_PROV2_INSTALL_FAILED_OPTIONS_INVALID_PROVIDERS' <<<"$PROVIDERS_FAILURE"
 XAI_MODEL_FAILURE="$(ROUTER_INSTALL_ATTEMPT=PROV3 bash "$PROJECT_ROOT/remote/install.sh" --xai-model 'grok 4' --no-restart 2>&1 || true)"
 grep -q 'GROKROUTER_PROV3_INSTALL_FAILED_OPTIONS_INVALID_XAI_MODEL' <<<"$XAI_MODEL_FAILURE"
+# Installers type model IDs into the Bot terminal: shell metacharacters must
+# stop install.sh before anything runs.
+for rejected_model in "--codex-model a;b INVALID_CODEX_MODEL" "--openrouter-model vendor/model\$(id) INVALID_OPENROUTER_MODEL" "--openrouter-model no-slash INVALID_OPENROUTER_MODEL" "--anthropic-model claude|sh INVALID_ANTHROPIC_MODEL"; do
+  read -r model_option model_value model_code <<<"$rejected_model"
+  MODEL_FAILURE="$(ROUTER_INSTALL_ATTEMPT=MODEL1 bash "$PROJECT_ROOT/remote/install.sh" "$model_option" "$model_value" --no-restart 2>&1 || true)"
+  grep -q "GROKROUTER_MODEL1_INSTALL_FAILED_OPTIONS_$model_code" <<<"$MODEL_FAILURE"
+done
+UNREVIEWED_OPTION_FAILURE="$(ROUTER_INSTALL_ATTEMPT=UNREV0 bash "$PROJECT_ROOT/remote/install.sh" --allow-unreviewed-version --no-restart 2>&1 || true)"
+grep -q 'GROKROUTER_UNREV0_INSTALL_FAILED_OPTIONS_INVALID_UNREVIEWED_VERSION' <<<"$UNREVIEWED_OPTION_FAILURE"
 grep -q 'auth xai' "$PROJECT_ROOT/remote/grokbot-router"
 grep -q 'resolve_claude_cli' "$PROJECT_ROOT/remote/grokbot-router"
 grep -q 'glibcVersionRuntime' "$PROJECT_ROOT/remote/grokbot-router"
@@ -161,12 +170,20 @@ expected_swift_list="$(printf '%s\n' "$expected_versions" | awk '{printf "%s\"%s
 grep -Fq "labelWithString: \"$expected_eyebrow\"" "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
 grep -Fq "private let supportedGrokVersions = $expected_swift_list" "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
 grep -q 'supportedGrokVersions.contains(version)' "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
-grep -Fq 'Custom model ID…' "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
-grep -Fq 'modelPopupChanged' "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
-grep -Fq 'sender.selectItem(withTitle: typed)' "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
+grep -Fq 'private let codexModelField = NSComboBox()' "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
+grep -Fq 'field.isEditable = true' "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
+! grep -Fq 'Custom model ID' "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
+grep -Fq '#"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}/[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}$"#' "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
+grep -Fq '#"^[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}$"#' "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
+grep -Fq 'models.first(where: { !Self.isValidModelID($0.id, provider: $0.provider) })' "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
+grep -Fq '"Allow unreviewed Grok Bot version (experimental)"' "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
+grep -Fq '\(detectedGrokVersion)\(unreviewedGrokVersion ? " --allow-unreviewed-version" : "") --provider' "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
+grep -Fq 'Grok Bot mode: \(grokMode)' "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
+grep -Fq '"SUPPORTEDVERSION", "UNREVIEWED"]' "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
+! grep -q 'promptadvisers' "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
 grep -q '"anchorVerifiedHosts"' "$PROJECT_ROOT/patch/manifests/0.44.0.json"
 ! grep -q 'PRIVATE BETA' "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
-grep -Fq 'contentRect: NSRect(x: 0, y: 0, width: 780, height: 838)' "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
+grep -Fq 'contentRect: NSRect(x: 0, y: 0, width: 780, height: 884)' "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
 grep -Fq 'NSStackView(views: [hero, modelCard, installCard, statusCard, activityLabel, scroll])' "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
 grep -q 'InstallerCardView' "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
 grep -q 'window.title = "GrokRouter"' "$PROJECT_ROOT/installer/GrokBotRouterInstaller.swift"
@@ -287,6 +304,79 @@ grep -q 'PATCHDRYRUN=PASS' <<<"$STRICT_FAILURE"
 cmp "$TEMPORARY/expected-rejected-host" "$ANCHOR_HOST"
 cmp "$HOST_FIXTURE" "$ANCHOR_BACKUP"
 
+# The unreviewed opt-in never applies to a reviewed, older, or in-between
+# version; those keep the exact gates.
+for not_newer in 0.44.0 0.40.0 0.29.0; do
+  NOT_NEWER_FAILURE="$(ROUTER_PATCH_HOST="$ANCHOR_HOST" \
+  ROUTER_PATCH_BACKUP="$ANCHOR_BACKUP" \
+  ROUTER_INSTALL_ATTEMPT=UNREV2 \
+  bash "$PAYLOAD/remote/install.sh" \
+    --install-root "$TEMPORARY/not-newer-runtime" \
+    --grok-version "$not_newer" \
+    --allow-unreviewed-version \
+    --providers openrouter \
+    --no-restart 2>&1 || true)"
+  grep -q 'GROKROUTER_UNREV2_INSTALL_FAILED_VALIDATE_PAYLOAD_UNREVIEWED_VERSION_NOT_NEWER' <<<"$NOT_NEWER_FAILURE"
+  [[ ! -e "$TEMPORARY/not-newer-runtime" ]]
+done
+cmp "$TEMPORARY/expected-rejected-host" "$ANCHOR_HOST"
+
+# An opted-in unreviewed newer version installs by structural verification
+# with its reviewed template; the registry tool, Doctor, and Restore Stock all
+# keep honoring that recorded mode, and restore returns the exact stock bytes.
+UNREVIEWED_RUNTIME="$TEMPORARY/unreviewed-runtime"
+UNREVIEWED_HOST="$TEMPORARY/unreviewed-host-main.cjs"
+UNREVIEWED_BACKUP="$TEMPORARY/unreviewed-backup/host-main.cjs.stock"
+UNREVIEWED_MANIFEST="$TEMPORARY/unreviewed-template.json"
+python3 - "$PAYLOAD/patch/manifests/0.36.0.json" "$UNREVIEWED_MANIFEST" <<'PYU'
+import json,sys
+manifest = json.load(open(sys.argv[1]))
+# Fit the small fixture host inside the structural size band.
+manifest["anchorVerifiedHosts"].update({"minBytes": 100, "maxBytes": 100000})
+json.dump(manifest, open(sys.argv[2], "w"))
+PYU
+cp "$HOST_FIXTURE" "$UNREVIEWED_HOST"
+printf '\n// unreviewed newer Grok Bot build\n' >> "$UNREVIEWED_HOST"
+cp "$UNREVIEWED_HOST" "$TEMPORARY/expected-unreviewed-host"
+mkdir -p "$UNREVIEWED_RUNTIME"
+run_unreviewed() {
+  ROUTER_PATCH_HOST="$UNREVIEWED_HOST" \
+  ROUTER_PATCH_BACKUP="$UNREVIEWED_BACKUP" \
+  ROUTER_PATCH_MANIFEST="$UNREVIEWED_MANIFEST" \
+  ROUTER_HOST_REGISTRY_ROOT="$TEMPORARY/unreviewed-registry-cache" \
+  ROUTER_WATCHDOG_ENABLED=0 \
+  ROUTER_BIN_DIR="$TEMPORARY/unreviewed-bin" \
+  ROUTER_GROK_SKILLS_ROOT="$TEMPORARY/unreviewed-grok-skills" \
+  "$@"
+}
+run_unreviewed env ROUTER_INSTALL_ATTEMPT=UNREV3 bash "$PAYLOAD/remote/install.sh" \
+  --install-root "$UNREVIEWED_RUNTIME" \
+  --grok-version 9.0.0 \
+  --allow-unreviewed-version \
+  --provider openrouter \
+  --providers openrouter \
+  --no-restart \
+  >"$TEMPORARY/install-unreviewed.log"
+grep -q 'GROKBOT_ROUTER_INSTALL_OK' "$TEMPORARY/install-unreviewed.log"
+grep -q '"stockTrust": "unreviewed-anchor-verified"' "$TEMPORARY/install-unreviewed.log"
+grep -q 'GROKBOT_MODEL_ROUTER_V45' "$UNREVIEWED_HOST"
+cmp "$TEMPORARY/expected-unreviewed-host" "$UNREVIEWED_BACKUP"
+python3 - "$UNREVIEWED_RUNTIME/provider.json" <<'PY'
+import json, sys
+config = json.load(open(sys.argv[1]))
+assert config["grokBotVersion"] == "9.0.0", config
+assert config["unreviewedVersion"] is True, config
+assert config["templateManifestVersion"] == "0.36.0", config
+PY
+[[ -z "$(run_unreviewed "$UNREVIEWED_RUNTIME/bin/host-registry" verify 2>/dev/null)" ]]
+run_unreviewed "$UNREVIEWED_RUNTIME/bin/grokbot-router" doctor >"$TEMPORARY/doctor-unreviewed.log" 2>&1
+grep -q '"hostAdapterVerified": true' "$TEMPORARY/doctor-unreviewed.log"
+grep -q 'HOSTTRUST=UNREVIEWED-ANCHOR-VERIFIED' "$TEMPORARY/doctor-unreviewed.log"
+grep -q 'UNREVIEWED VERSION: Grok Bot 9.0.0' "$TEMPORARY/doctor-unreviewed.log"
+run_unreviewed "$UNREVIEWED_RUNTIME/bin/grokbot-router" repair --no-restart >/dev/null
+run_unreviewed "$UNREVIEWED_RUNTIME/bin/grokbot-router" uninstall >/dev/null
+cmp "$TEMPORARY/expected-unreviewed-host" "$UNREVIEWED_HOST"
+
 XAI_RUNTIME="$TEMPORARY/xai-runtime"
 XAI_HOST="$TEMPORARY/xai-host-main.cjs"
 XAI_BACKUP="$TEMPORARY/xai-backup/host-main.cjs.stock"
@@ -307,8 +397,8 @@ bash "$PAYLOAD/remote/install.sh" \
   >"$TEMPORARY/install-xai.log"
 grep -q 'OpenRouter/xAI-only setup needs no dependency download' "$TEMPORARY/install-xai.log"
 [[ ! -d "$XAI_RUNTIME/node_modules" ]]
-"$TEMPORARY/xai-bin/grokbot-router" status | grep -q 'Default provider: xai'
-"$TEMPORARY/xai-bin/grokbot-router" status | grep -q 'xAI model: grok-build-0.1'
+grep -q 'Default provider: xai' <<<"$("$TEMPORARY/xai-bin/grokbot-router" status)"
+grep -q 'xAI model: grok-build-0.1' <<<"$("$TEMPORARY/xai-bin/grokbot-router" status)"
 python3 - "$XAI_RUNTIME/provider.json" <<'PY'
 import json
 import sys
@@ -333,6 +423,7 @@ ROUTER_GROK_SKILLS_ROOT="$TEST_GROK_SKILLS" \
 ROUTER_INSTALL_ATTEMPT=SUCCESS45 \
 bash "$PAYLOAD/remote/install.sh" \
   --install-root "$TEST_RUNTIME" \
+  --grok-version 0.30.0 \
   --provider codex \
   --providers codex,openrouter \
   --no-restart \
@@ -366,7 +457,7 @@ done
 ln -s "$TEST_RUNTIME/skills/provider" "$TEST_GROK_SKILLS/provider"
 mkdir "$TEST_GROK_SKILLS/reasoning"
 printf 'user-owned\n' > "$TEST_GROK_SKILLS/reasoning/KEEP"
-"$TEST_BIN/grokbot-router" status | grep -q 'Default provider: codex'
+grep -q 'Default provider: codex' <<<"$("$TEST_BIN/grokbot-router" status)"
 python3 - "$TEST_RUNTIME/provider.json" "$PROJECT_ROOT/runtime/provider.default.json" <<'PY'
 import json
 import sys
@@ -452,8 +543,8 @@ await assert.rejects(stat(join(root,'conversation-states','old.json.lock')), {co
 await assert.rejects(stat(join(root,'conversation-states','stale.tmp')), {code:'ENOENT'});
 NODESTATE
 
-"$TEST_BIN/grokbot-router" status | grep -q 'Default provider: openrouter'
-"$TEST_BIN/grokbot-router" status | grep -q 'OpenRouter model: openai/gpt-5.6-luna'
+grep -q 'Default provider: openrouter' <<<"$("$TEST_BIN/grokbot-router" status)"
+grep -q 'OpenRouter model: openai/gpt-5.6-luna' <<<"$("$TEST_BIN/grokbot-router" status)"
 grep -q 'user-owned' "$TEST_GROK_SKILLS/reasoning/KEEP"
 [[ ! -e "$TEST_GROK_SKILLS/provider" && ! -L "$TEST_GROK_SKILLS/provider" ]]
 

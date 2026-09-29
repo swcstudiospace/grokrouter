@@ -1,3 +1,4 @@
+# Provenance: upstream promptadvisers/grokrouter beta.46 transformation (c8eea82); retained verbatim only to authenticate upgrades.
 """Original beta.46 transformation, retained only to authenticate upgrades.
 
 Source: c8eea82a5e544e1c64a63d590f0585b12db8ac56. Contains no Grok host source.

@@ -59,3 +59,44 @@ test('management selects only the configured version registry and rejects unsupp
     assert.match(rejected.stderr.toString(), /unsupported/);
   } finally { await rm(stage, {recursive: true, force: true}); }
 });
+
+test('an opted-in unreviewed newer version uses its reviewed template and never a registry', {skip: process.platform === 'win32'}, async () => {
+  const stage = await realpath(await mkdtemp(join(tmpdir(), 'grokrouter-unreviewed-')));
+  try {
+    for (const directory of ['bin', 'compatibility', 'cache']) await mkdir(join(stage, directory));
+    for (const file of ['host-registry', 'verify-host-registry.mjs']) await copyFile(new URL(`remote/${file}`, root), join(stage, 'bin', file));
+    for (const file of ['supported-apps.json', 'registry-public-key.pem', ...versions.flatMap(v => [`${v}-hosts.json`, `${v}-hosts.json.sig`])]) await copyFile(new URL(`compatibility/${file}`, root), join(stage, 'compatibility', file));
+    const env = {...process.env, ROUTER_HOST_REGISTRY_ROOT: join(stage, 'cache')};
+    const registry = (...args) => spawnSync('bash', [join(stage, 'bin/host-registry'), ...args], {env, encoding: 'utf8'});
+    const newest = versions.at(-1);
+    const newer = newest.replace(/^(\d+)\./, (_, major) => `${Number(major) + 1}.`);
+    await writeFile(join(stage, 'provider.json'), JSON.stringify({grokBotVersion: newer, unreviewedVersion: true, templateManifestVersion: newest}));
+    assert.equal(registry('version').stdout.trim(), newer);
+    assert.deepEqual(registry('patch-args').stdout.trim().split('\n'),
+      ['--manifest', join(stage, `patch/manifests/${newest}.json`), '--unreviewed-version', newer]);
+    const verified = registry('verify');
+    assert.equal(verified.status, 0);
+    assert.equal(verified.stdout, '');
+    assert.match(verified.stderr, /unreviewed/);
+    assert.notEqual(registry('refresh').status, 0);
+
+    // A reviewed version keeps its exact gates even if an old opt-in remains.
+    await writeFile(join(stage, 'provider.json'), JSON.stringify({grokBotVersion: newest, unreviewedVersion: true, templateManifestVersion: newest}));
+    assert.deepEqual(registry('patch-args').stdout.trim().split('\n'), ['--manifest', join(stage, `patch/manifests/${newest}.json`)]);
+    assert.equal(registry('verify').stdout.trim(), join(stage, `compatibility/${newest}-hosts.json`));
+
+    for (const config of [
+      {grokBotVersion: newer, templateManifestVersion: newest},
+      {grokBotVersion: '0.40.0', unreviewedVersion: true, templateManifestVersion: newest},
+      {grokBotVersion: '0.0.1', unreviewedVersion: true, templateManifestVersion: newest},
+      {grokBotVersion: newer, unreviewedVersion: true, templateManifestVersion: newer},
+      {grokBotVersion: newer, unreviewedVersion: true, templateManifestVersion: '../../other'},
+      {grokBotVersion: `${newer};true`, unreviewedVersion: true, templateManifestVersion: newest},
+    ]) {
+      await writeFile(join(stage, 'provider.json'), JSON.stringify(config));
+      const rejected = registry('patch-args');
+      assert.notEqual(rejected.status, 0, JSON.stringify(config));
+      assert.match(rejected.stderr, /unsupported/);
+    }
+  } finally { await rm(stage, {recursive: true, force: true}); }
+});

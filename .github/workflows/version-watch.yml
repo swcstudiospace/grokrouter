@@ -60,7 +60,7 @@ jobs:
           set -euo pipefail
           title="Grok Bot $NEW_VERSION has no router manifest"
           body="$(cat <<EOF
-          The official stable feed now reports **Grok Bot $NEW_VERSION**, which has no manifest in \`patch/manifests/\`. GrokRouter refuses to install there until a real host probe lands. This issue tracks that work; it does not loosen any gate.
+          The official stable feed now reports **Grok Bot $NEW_VERSION**, which has no manifest in \`patch/manifests/\`. GrokRouter's normal install refuses it until a real host probe lands; users can only opt into the experimental **Allow unreviewed Grok Bot version** installer checkbox, which accepts the host by structural checks instead of a reviewed hash. This issue tracks reviewed support; it does not loosen any gate.
 
           ## Automatic path
 
@@ -74,11 +74,11 @@ jobs:
           python3 scripts/host-probe.py --anchor 'function createMockPromptExecutor(options2)' --anchor 'createSession(onRequestId, sessionOptions)' --anchor 'const mainSessionOptions = {' > /tmp/probe.txt
           \`\`\`
 
-          If an anchor reports a count other than 1, use the probe's \`candidates\` lines to pick the replacement source line for this build, re-run the probe with \`--anchor '<exact line>'\` for it, and confirm every chosen anchor counts exactly once with an empty \`candidates.routerMarker\`.
+          If an anchor reports a count other than 1, use the probe's \`candidates\` lines to pick the replacement source line for this build, re-run the probe with \`--anchor '<exact line>'\` for it, and confirm every chosen anchor and every \`patchAnchors\` seam counts exactly once with an empty \`candidates.routerMarker\`.
 
           ## 2. Ingest the probe
 
-          Paste the complete probe output into the **Ingest host probe** workflow (Actions tab): \`version\` = \`$NEW_VERSION\`, \`probe_json\` = the full output, \`anchors\` = one reviewed anchor per line. It scaffolds \`patch/manifests/$NEW_VERSION.json\`, updates the installer version lists, and opens a draft PR.
+          Paste the complete probe output into the **Ingest host probe** workflow (Actions tab): \`version\` = \`$NEW_VERSION\`, \`probe_json\` = the full output, \`anchors\` = one reviewed anchor per line. It scaffolds \`patch/manifests/$NEW_VERSION.json\`, the supported-apps entry, the unsigned \`compatibility/$NEW_VERSION-hosts.json\`, and the installer version lists, then opens a draft PR. A maintainer signs the registry locally with \`scripts/sign-host-registry.mjs\`.
 
           ## 3. Prove support before claiming it
 

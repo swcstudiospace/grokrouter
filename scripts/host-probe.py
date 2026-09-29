@@ -29,6 +29,15 @@ KNOWN_MOCK_ANCHORS = [
     "const mockResponse = process.env.SAND_AGENT_MOCK_RESPONSE;",
     "const mockResponse = options2.agentMockResponse;",
 ]
+# Seams the patch hooks in every version beyond the manifest anchors (group
+# member dispatch, memory extraction, episode summary). Keep in step with
+# PATCH_ANCHORS in patch/router_patch.py; this probe stays a single file so it
+# can be copied into a Bot terminal on its own.
+PATCH_ANCHORS = [
+    "const memberResult = await runner.run(promptForAttempt, {",
+    "const extraction = await extractMemories({",
+    "const narrative = await summarizeEpisode({",
+]
 # When an exact anchor is missing, show the nearest candidates so the manifest
 # can be updated without a copy of the host.
 CANDIDATE_PATTERNS = {
@@ -38,6 +47,9 @@ CANDIDATE_PATTERNS = {
     "sessionOptions": r"const \w*[sS]essionOptions = \{",
     "boxId": r"resolveBoxId\(",
     "getModelId": r"getModelId",
+    "groupDispatch": r"await runner\.run\(",
+    "memoryExtraction": r"await extractMemories\(",
+    "episodeSummary": r"await summarizeEpisode\(",
     "routerMarker": r"GROKBOT_MODEL_ROUTER_V\d+|GROKBOT_ROUTER|OPENGROK",
 }
 MAX_LINES = 6
@@ -77,6 +89,7 @@ def main() -> int:
         "versionHints": version_hints(source),
         "anchors": {anchor: source.count(anchor) for anchor in REQUIRED_ANCHORS},
         "mockAnchors": {anchor: source.count(anchor) for anchor in KNOWN_MOCK_ANCHORS},
+        "patchAnchors": {anchor: source.count(anchor) for anchor in PATCH_ANCHORS},
         "customAnchors": {anchor: source.count(anchor) for anchor in extra},
         "candidates": {},
     }

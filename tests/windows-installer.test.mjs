@@ -23,7 +23,6 @@ test("Windows installer version matches the shared release version", () => {
 
 test("Windows installer keeps the exact compatibility and local-only gates", () => {
   assert.match(main, /SUPPORTED_GROK_VERSIONS = \["0\.30\.0", "0\.36\.0", "0\.44\.0"\]/);
-  assert.match(main, /SUPPORTED_GROK_VERSIONS\.find\(/);
   assert.match(main, /metadata\.Status !== "Valid"/);
   assert.match(main, /127\.0\.0\.1:\$\{CDP_PORT\}/);
   assert.match(main, /--remote-debugging-address=127\.0\.0\.1/);
@@ -96,7 +95,7 @@ test("installation registers workflows before restarting their gateway and verif
     let gatewayAvailable=true;
     const install=runInNewContext(`${installSource}\n${restartSource}\ninstallRouter`,{
       Buffer,crypto,fs:{readFileSync:()=>Buffer.from('test-payload')},
-      detectedGrokVersion:'0.36.0',validatedInstallOptions:(options)=>options,
+      detectedGrokVersion:'0.36.0',detectedGrokUnreviewed:false,validatedInstallOptions:(options)=>options,
       setStatus:()=>{},log:()=>{},relaunchWithDiagnostics:async()=>{},
       CDPClient:class {close(){}},browserWebSocketURL:async()=> 'ws://local-test',
       mainPageSession:async()=> 'main',payloadPath:()=> 'test-payload',makeInstallAttemptID:()=> 'TEST',
@@ -132,6 +131,116 @@ test("installation registers workflows before restarting their gateway and verif
       assert.deepEqual(events,['installed','verified','registered','restart','restart-verified','reconnect']);
     }
   }
+});
+
+const reviewedGrokVersions = JSON.parse(main.match(/SUPPORTED_GROK_VERSIONS = (\[[^\n]+\])/)[1]);
+
+test("install command opts into structural host checks only for an unreviewed Grok Bot", async () => {
+  const installSource=main.slice(main.indexOf('async function installRouter('),main.indexOf('const REMOTE_ACTIONS'));
+  for (const [version,unreviewed] of [['0.44.0',false],['0.61.0',true]]) {
+    let installation='';
+    const install=runInNewContext(`${installSource}\ninstallRouter`,{
+      Buffer,crypto,fs:{readFileSync:()=>Buffer.from('test-payload')},
+      detectedGrokVersion:version,detectedGrokUnreviewed:unreviewed,validatedInstallOptions:(options)=>options,
+      setStatus:()=>{},log:()=>{},relaunchWithDiagnostics:async()=>{},
+      CDPClient:class {close(){}},browserWebSocketURL:async()=> 'ws://local-test',
+      mainPageSession:async()=> 'main',payloadPath:()=> 'test-payload',makeInstallAttemptID:()=> 'TEST',
+      typeRemoteCommandsResilient:async(commands)=>{
+        installation=commands.find(command=>command.includes('payload/remote/install.sh'))||installation;
+        return {};
+      },
+      waitForSentinel:async()=>{},updateNativeWorkflows:async()=>{},restartInstalledHost:async()=>{},evaluate:async()=>({}),
+    });
+    await install('test-app',{providers:['codex'],defaultProvider:'codex',codexModel:'gpt-6-astra',openRouterModel:'vendor/test',anthropicModel:'claude-sonnet-5',xaiModel:'grok-4.6'});
+    if (unreviewed) {
+      assert.match(installation,/ --grok-version 0\.61\.0 --allow-unreviewed-version --provider codex /);
+    } else {
+      assert.match(installation,/ --grok-version 0\.44\.0 --provider codex /);
+      assert.doesNotMatch(installation,/--allow-unreviewed-version/);
+    }
+  }
+});
+
+test("install options accept any well-formed model ID and reject shell-active input", () => {
+  const source=main.slice(main.indexOf('const MODEL_ID_RULES'),main.indexOf('async function installRouter('));
+  const validate=runInNewContext(`${source}\nvalidatedInstallOptions`,{PROVIDER_IDS:new Set(['codex','openrouter','anthropic','xai'])});
+  const base={providers:['codex'],defaultProvider:'codex',codexModel:'gpt-6-astra',openRouterModel:'anthropic/claude-sonnet-5.5',anthropicModel:'claude-sonnet-5',xaiModel:'grok-4.6'};
+  const accepted=validate({...base,codexModel:' gpt-9-test ',openRouterModel:'anthropic/claude-sonnet-9.9:beta',anthropicModel:'claude-next+1',xaiModel:'grok-9.0'});
+  assert.equal(accepted.codexModel,'gpt-9-test');
+  assert.equal(accepted.openRouterModel,'anthropic/claude-sonnet-9.9:beta');
+  assert.equal(accepted.anthropicModel,'claude-next+1');
+  assert.equal(accepted.xaiModel,'grok-9.0');
+  // install.sh receives every model, so disabled providers are validated too.
+  for (const [field,provider] of [['codexModel','Codex'],['openRouterModel','OpenRouter'],['anthropicModel','Anthropic'],['xaiModel','xAI']]) {
+    for (const bad of ['a;b','a b','$(id)','vendor/model;rm','`id`','model\nrm','',42,undefined]) {
+      assert.throws(()=>validate({...base,[field]:bad}),new RegExp(`The ${provider} model ID must be`),`${field}=${JSON.stringify(bad)}`);
+    }
+  }
+  for (const bad of ['claude-sonnet-5','/model','vendor/','vendor/a/b','-vendor/model']) {
+    assert.throws(()=>validate({...base,openRouterModel:bad}),/The OpenRouter model ID must be/,bad);
+  }
+  assert.throws(()=>validate({...base,codexModel:`a${'b'.repeat(128)}`}),/The Codex model ID must be/);
+});
+
+function grokValidator(productVersion,status='Valid') {
+  const source=main.slice(main.indexOf('function parseGrokVersion('),main.indexOf('async function stopGrok('));
+  const context={
+    SUPPORTED_GROK_VERSIONS:reviewedGrokVersions,SUPPORTED_GROK_VERSION:reviewedGrokVersions.join(', '),
+    process:{platform:'win32'},knownGrokPaths:()=>['C:\\Grok Bot\\Grok Bot.exe'],fs:{existsSync:()=>true},
+    execFileAsync:async()=>({stdout:JSON.stringify({Version:productVersion,Status:status})}),
+    log:()=>{},detectedGrokVersion:'stale',detectedGrokUnreviewed:true,
+  };
+  return {context,locate:runInNewContext(`${source}\nlocateAndValidateGrok`,context)};
+}
+
+test("Grok Bot version gate separates reviewed, opted-in newer, and refused builds", async () => {
+  for (const [productVersion,allow,expected] of [['0.44.0',false,'0.44.0'],['0.44.0.0',false,'0.44.0'],['0.36.0',true,'0.36.0'],['0.30.0.0',true,'0.30.0']]) {
+    const {context,locate}=grokValidator(productVersion);
+    assert.equal(await locate(allow),'C:\\Grok Bot\\Grok Bot.exe');
+    assert.equal(context.detectedGrokVersion,expected);
+    assert.equal(context.detectedGrokUnreviewed,false,productVersion);
+  }
+  for (const [productVersion,expected] of [['0.61.0','0.61.0'],['0.61.0.0','0.61.0'],['0.100.0','0.100.0'],['1.0.0','1.0.0']]) {
+    const {context,locate}=grokValidator(productVersion);
+    await locate(true);
+    assert.equal(context.detectedGrokVersion,expected);
+    assert.equal(context.detectedGrokUnreviewed,true,productVersion);
+  }
+  for (const allow of [false,'true',1,undefined]) {
+    const {context,locate}=grokValidator('0.61.0');
+    await assert.rejects(locate(allow),(error)=>error.message.includes('Allow unreviewed Grok Bot version (experimental)')&&error.message.includes('docs/VERSION-TRACKING.md'));
+    assert.equal(context.detectedGrokVersion,'');
+    assert.equal(context.detectedGrokUnreviewed,false);
+  }
+  for (const productVersion of ['0.29.0','0.40.0','0.44','0.61','0.61.0.1','0.61.0-beta','v0.61.0','00.61.0','0.61.0.00','',null]) {
+    const {context,locate}=grokValidator(productVersion);
+    await assert.rejects(locate(true),/is not supported/,String(productVersion));
+    assert.equal(context.detectedGrokUnreviewed,false);
+  }
+  const unsigned=grokValidator('0.61.0','NotSigned');
+  await assert.rejects(unsigned.locate(true),/valid Windows signature/);
+  assert.equal(unsigned.context.detectedGrokVersion,'');
+});
+
+test("only a strict boolean opt-in reaches the Grok Bot version gate", async () => {
+  const source=main.slice(main.indexOf('async function runAction('),main.indexOf('function createWindow('));
+  for (const [payload,expected] of [[{allowUnreviewedVersion:true},true],[{allowUnreviewedVersion:'true'},false],[{allowUnreviewedVersion:1},false],[{},false]]) {
+    let received;
+    const runAction=runInNewContext(`${source}\nrunAction`,{
+      locateAndValidateGrok:async(allow)=>{received=allow;return 'test-app';},
+      installRouter:async()=>'installed',sendRemoteAction:async()=>'sent',relaunchNormallyIfNeeded:async()=>{},
+    });
+    assert.equal(await runAction('uninstall',payload),'sent');
+    assert.equal(received,expected,JSON.stringify(payload));
+  }
+});
+
+test("safe diagnostics keep unreviewed host verification lines", () => {
+  const source=main.slice(main.indexOf('const INTERESTING_DIAGNOSTIC_WORDS'),main.indexOf('function grokModeDescription('));
+  const excerpt=runInNewContext(`${source}\nredactedDiagnosticExcerpt`,{});
+  const text=excerpt('ordinary noise\nUNREVIEWED Grok Bot 0.61.0 accepted by structural checks\nmore noise');
+  assert.match(text,/UNREVIEWED Grok Bot 0\.61\.0/);
+  assert.doesNotMatch(text,/noise/);
 });
 
 test("workflow evaluation survives slow readiness while normal diagnostic calls still time out", async () => {

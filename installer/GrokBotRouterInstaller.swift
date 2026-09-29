@@ -5,7 +5,11 @@ import Vision
 
 private let supportedGrokVersions = ["0.30.0", "0.36.0", "0.44.0"]
 private let supportedGrokVersion = supportedGrokVersions.joined(separator: ", ")
-private var detectedGrokVersion = "0.30.0"
+// Set together by validateGrokApp; empty until an app passes validation.
+private var detectedGrokVersion = ""
+// True only for an explicitly opted-in build newer than every reviewed version.
+private var unreviewedGrokVersion = false
+private let allowUnreviewedTitle = "Allow unreviewed Grok Bot version (experimental)"
 private let grokBundleIdentifier = "com.anysphere.sand"
 private let grokAppPath = "/Applications/Grok Bot.app"
 private let cdpPort = 19222
@@ -179,12 +183,12 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
     private let anthropicCheckbox = NSButton(checkboxWithTitle: "Anthropic", target: nil, action: nil)
     private let xaiCheckbox = NSButton(checkboxWithTitle: "xAI", target: nil, action: nil)
     private let defaultProviderPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let codexModelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let openRouterModelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let anthropicModelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let xaiModelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let codexModelField = NSComboBox()
+    private let openRouterModelField = NSComboBox()
+    private let anthropicModelField = NSComboBox()
+    private let xaiModelField = NSComboBox()
     private let openRouterKeyField = NSSecureTextField()
-    private let customModelItemTitle = "Custom model ID…"
+    private let allowUnreviewedCheckbox = NSButton(checkboxWithTitle: allowUnreviewedTitle, target: nil, action: nil)
     private let installButton = NSButton(title: "Install Router", target: nil, action: nil)
     private let authButton = NSButton(title: "Start Codex Sign-in", target: nil, action: nil)
     private let anthropicAuthButton = NSButton(title: "Start Anthropic Sign-in", target: nil, action: nil)
@@ -202,6 +206,9 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
     private var busy = false
     private var diagnosticsLaunchedByInstaller = false
     private var lastDiagnosticReport = ""
+    // Snapshot of allowUnreviewedCheckbox taken on the main thread when an
+    // operation starts, so background validation never touches AppKit.
+    private var allowUnreviewedGrokVersion = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildWindow()
@@ -213,7 +220,7 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
 
     private func buildWindow() {
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 780, height: 838),
+            contentRect: NSRect(x: 0, y: 0, width: 780, height: 884),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -263,45 +270,53 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
         xaiCheckbox.action = #selector(providerSelectionChanged)
 
         defaultProviderPopup.addItems(withTitles: ["Codex SDK", "OpenRouter", "Anthropic", "xAI"])
-        codexModelPopup.addItems(withTitles: [
-            "gpt-6-astra",
-            "gpt-6-astra-pro",
-            "gpt-5.6-sol",
-            "gpt-5.6-sol-pro",
-            "gpt-5.6-terra",
-            "gpt-5.6-luna"
-        ])
-        openRouterModelPopup.addItems(withTitles: [
-            "anthropic/claude-sonnet-5",
-            "anthropic/claude-opus-5",
-            "anthropic/claude-fable-5.1",
-            "anthropic/claude-haiku-4.5",
-            "openai/gpt-6-astra",
-            "openai/gpt-5.6-luna",
-            "x-ai/grok-4.6",
-            "google/gemini-3.8-flash",
-            "moonshotai/kimi-k3",
-            "deepseek/deepseek-v4-pro",
-            "openrouter/free"
-        ])
-        anthropicModelPopup.addItems(withTitles: [
-            "claude-sonnet-5",
-            "claude-opus-5",
-            "claude-haiku-4-5",
-            "claude-fable-5-1"
-        ])
-        xaiModelPopup.addItems(withTitles: [
-            "grok-4.6",
-            "grok-4.5",
-            "grok-4.3",
-            "grok-build-0.1",
-            "grok-4.20",
-            "grok-4.20-multi-agent"
-        ])
-        for popup in [codexModelPopup, openRouterModelPopup, anthropicModelPopup, xaiModelPopup] {
-            popup.addItem(withTitle: customModelItemTitle)
-            popup.target = self
-            popup.action = #selector(modelPopupChanged(_:))
+        // Editable: suggestions are packaged, but any well-formed model ID is
+        // accepted and validated before the install command is typed.
+        let modelSuggestions: [(NSComboBox, [String])] = [
+            (codexModelField, [
+                "gpt-6-astra",
+                "gpt-6-astra-pro",
+                "gpt-5.6-sol",
+                "gpt-5.6-sol-pro",
+                "gpt-5.6-terra",
+                "gpt-5.6-luna"
+            ]),
+            (openRouterModelField, [
+                "anthropic/claude-sonnet-5.5",
+                "anthropic/claude-opus-5.5",
+                "anthropic/claude-sonnet-5",
+                "anthropic/claude-opus-5",
+                "anthropic/claude-fable-5.1",
+                "anthropic/claude-haiku-4.5",
+                "openai/gpt-6-astra",
+                "openai/gpt-5.6-luna",
+                "x-ai/grok-4.6",
+                "google/gemini-3.8-flash",
+                "moonshotai/kimi-k3",
+                "deepseek/deepseek-v4-pro",
+                "openrouter/free"
+            ]),
+            (anthropicModelField, [
+                "claude-sonnet-5",
+                "claude-opus-5",
+                "claude-haiku-4-5",
+                "claude-fable-5-1"
+            ]),
+            (xaiModelField, [
+                "grok-4.6",
+                "grok-4.5",
+                "grok-4.3",
+                "grok-build-0.1",
+                "grok-4.20",
+                "grok-4.20-multi-agent"
+            ])
+        ]
+        for (field, suggestions) in modelSuggestions {
+            field.addItems(withObjectValues: suggestions)
+            field.numberOfVisibleItems = suggestions.count
+            field.isEditable = true
+            field.completes = true
+            field.stringValue = suggestions[0]
         }
         openRouterKeyField.placeholderString = "OpenRouter API key (stored only in Grok Bot Secrets)"
 
@@ -313,10 +328,10 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
         providerRow.orientation = .horizontal
         providerRow.spacing = 28
         let defaultRow = formRow("Default provider", defaultProviderPopup)
-        let codexRow = formRow("Codex model", codexModelPopup)
-        let openRouterRow = formRow("OpenRouter model", openRouterModelPopup)
-        let anthropicRow = formRow("Anthropic model", anthropicModelPopup)
-        let xaiRow = formRow("xAI model", xaiModelPopup)
+        let codexRow = formRow("Codex model", codexModelField)
+        let openRouterRow = formRow("OpenRouter model", openRouterModelField)
+        let anthropicRow = formRow("Anthropic model", anthropicModelField)
+        let xaiRow = formRow("xAI model", xaiModelField)
         let keyRow = formRow("OpenRouter key", openRouterKeyField)
 
         let modelSectionHeader = sectionHeader(
@@ -407,10 +422,24 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
         installRow.orientation = .horizontal
         installRow.alignment = .centerY
         installRow.spacing = 20
+        allowUnreviewedCheckbox.state = .off
+        allowUnreviewedCheckbox.font = .systemFont(ofSize: 13, weight: .medium)
+        let unreviewedWarning = NSTextField(labelWithString: "Only for a Grok Bot newer than every reviewed version. Structural host checks; Restore Stock stays available.")
+        unreviewedWarning.font = .systemFont(ofSize: 11, weight: .regular)
+        unreviewedWarning.textColor = .secondaryLabelColor
+        unreviewedWarning.lineBreakMode = .byTruncatingTail
+        unreviewedWarning.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let unreviewedDetail = "Only for a Grok Bot newer than every reviewed version. The Bot host is accepted by structural checks instead of a reviewed hash; Restore Stock stays available."
+        unreviewedWarning.toolTip = unreviewedDetail
+        allowUnreviewedCheckbox.toolTip = unreviewedDetail
+        let unreviewedStack = NSStackView(views: [allowUnreviewedCheckbox, unreviewedWarning])
+        unreviewedStack.orientation = .vertical
+        unreviewedStack.alignment = .leading
+        unreviewedStack.spacing = 2
         let utilityLabel = NSTextField(labelWithString: "TOOLS")
         utilityLabel.font = .monospacedSystemFont(ofSize: 10, weight: .semibold)
         utilityLabel.textColor = .tertiaryLabelColor
-        let installStack = NSStackView(views: [installSectionHeader, installRow, utilityLabel, utilities, recoveryRow])
+        let installStack = NSStackView(views: [installSectionHeader, installRow, unreviewedStack, utilityLabel, utilities, recoveryRow])
         installStack.orientation = .vertical
         installStack.alignment = .leading
         installStack.spacing = 12
@@ -500,40 +529,20 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
         return row
     }
 
-    @objc private func modelPopupChanged(_ sender: NSPopUpButton) {
-        guard sender.titleOfSelectedItem == customModelItemTitle else { return }
-        let isOpenRouter = sender === openRouterModelPopup
-        let alert = NSAlert()
-        alert.messageText = isOpenRouter ? "Use any OpenRouter model" : "Use any model ID"
-        alert.informativeText = isOpenRouter
-            ? "Type any vendor/model ID from /models search in Grok Bot, e.g. deepseek/deepseek-v4-pro."
-            : "Type any model ID for this provider."
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 22))
-        field.placeholderString = isOpenRouter ? "vendor/model" : "model-id"
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Use model")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else {
-            sender.selectItem(at: 0)
-            return
-        }
-        let typed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let wellFormed = !typed.isEmpty
-            && typed.rangeOfCharacter(from: .whitespacesAndNewlines) == nil
-            && typed.range(of: "^[A-Za-z0-9][A-Za-z0-9._:/+-]*$", options: .regularExpression) != nil
-            && (!isOpenRouter || typed.contains("/"))
-        guard wellFormed else {
-            sender.selectItem(at: 0)
-            let warning = NSAlert()
-            warning.alertStyle = .warning
-            warning.messageText = "That model ID does not look valid"
-            warning.informativeText = isOpenRouter ? "Use vendor/model format." : "Use the provider's model ID format."
-            warning.addButton(withTitle: "OK")
-            warning.runModal()
-            return
-        }
-        if sender.item(withTitle: typed) == nil { sender.addItem(withTitle: typed) }
-        sender.selectItem(withTitle: typed)
+    // Model IDs are typed into the Bot terminal over VNC, so only a narrow,
+    // shell-inert character set is accepted. remote/install.sh applies the same rules.
+    private static let openRouterModelIDPattern = #"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}/[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}$"#
+    private static let modelIDPattern = #"^[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}$"#
+
+    /// Whole-string match; ICU's `$` alone would also accept a trailing newline.
+    static func matchesEntirely(_ value: String, _ pattern: String) -> Bool {
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return false }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        return expression.firstMatch(in: value, range: range)?.range == range
+    }
+
+    static func isValidModelID(_ value: String, provider: String) -> Bool {
+        matchesEntirely(value, provider == "openrouter" ? openRouterModelIDPattern : modelIDPattern)
     }
 
     @objc private func providerSelectionChanged() {
@@ -542,10 +551,10 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
         let anthropic = anthropicCheckbox.state == .on
         let xai = xaiCheckbox.state == .on
         let previousSelection = defaultProviderPopup.titleOfSelectedItem
-        codexModelPopup.isEnabled = codex
-        openRouterModelPopup.isEnabled = openRouter
-        anthropicModelPopup.isEnabled = anthropic
-        xaiModelPopup.isEnabled = xai
+        codexModelField.isEnabled = codex
+        openRouterModelField.isEnabled = openRouter
+        anthropicModelField.isEnabled = anthropic
+        xaiModelField.isEnabled = xai
         openRouterKeyField.isEnabled = openRouter
         defaultProviderPopup.removeAllItems()
         if codex { defaultProviderPopup.addItem(withTitle: "Codex SDK") }
@@ -567,6 +576,7 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
         openRouterCheckbox.isEnabled = !value
         anthropicCheckbox.isEnabled = !value
         xaiCheckbox.isEnabled = !value
+        allowUnreviewedCheckbox.isEnabled = !value
         installButton.isEnabled = !value
         installButton.alphaValue = value ? 0.55 : 1
         authButton.isEnabled = !value
@@ -628,7 +638,7 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
     }
 
     private func redactedDiagnosticExcerpt(_ text: String) -> String {
-        let interestingWords = ["ERROR", "FAILED", "REQUIRED", "MISSING", "NPM", "GROKROUTER", "HOSTSHA", "HOSTBYTES", "CLOUDARCH", "ANCHORS", "PATCHDRYRUN", "HOSTTRUST", "SUPPORTEDVERSION"]
+        let interestingWords = ["ERROR", "FAILED", "REQUIRED", "MISSING", "NPM", "GROKROUTER", "HOSTSHA", "HOSTBYTES", "CLOUDARCH", "ANCHORS", "PATCHDRYRUN", "HOSTTRUST", "SUPPORTEDVERSION", "UNREVIEWED"]
         let selected = text
             .split(whereSeparator: { $0.isNewline })
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -655,10 +665,19 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
 
     private func makeDiagnosticReport(failure: String, terminalText: String) -> String {
         let installerVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+        let grokMode: String
+        if detectedGrokVersion.isEmpty {
+            grokMode = "not verified"
+        } else if unreviewedGrokVersion {
+            grokMode = "UNREVIEWED \(detectedGrokVersion) (experimental opt-in, structural host verification)"
+        } else {
+            grokMode = "reviewed \(detectedGrokVersion)"
+        }
         return [
             "GrokRouter safe diagnostic report",
             "Installer: \(installerVersion)",
             "Supported Grok Bot: \(supportedGrokVersion)",
+            "Grok Bot mode: \(grokMode)",
             "macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)",
             "Architecture: arm64",
             "Failure: \(failure)",
@@ -678,7 +697,7 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openSupportIssue() {
-        guard let url = URL(string: "https://github.com/promptadvisers/grokrouter/issues/new?template=installation-failure.yml") else { return }
+        guard let url = URL(string: "https://github.com/swcstudiospace/grokrouter/issues/new?template=installation-failure.yml") else { return }
         NSWorkspace.shared.open(url)
     }
 
@@ -690,6 +709,7 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
         guard !busy else { return }
         lastDiagnosticReport = ""
         recoveryRow.isHidden = true
+        allowUnreviewedGrokVersion = allowUnreviewedCheckbox.state == .on
         setBusy(true, status: initialStatus)
         Task {
             do {
@@ -739,10 +759,30 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
             anthropic ? "anthropic" : nil,
             xai ? "xai" : nil
         ].compactMap { $0 }.joined(separator: ",")
-        let codexModel = codexModelPopup.titleOfSelectedItem ?? "gpt-5.6-sol"
-        let openRouterModel = openRouterModelPopup.titleOfSelectedItem ?? "anthropic/claude-sonnet-5"
-        let anthropicModel = anthropicModelPopup.titleOfSelectedItem ?? "claude-sonnet-5"
-        let xaiModel = xaiModelPopup.titleOfSelectedItem ?? "grok-4.6"
+        let trimmed = { (field: NSComboBox) in field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let codexModel = trimmed(codexModelField)
+        let openRouterModel = trimmed(openRouterModelField)
+        let anthropicModel = trimmed(anthropicModelField)
+        let xaiModel = trimmed(xaiModelField)
+        // install.sh always receives all four models, so every one is checked
+        // before anything is typed into the Bot terminal.
+        let models = [
+            (provider: "codex", name: "Codex", id: codexModel),
+            (provider: "openrouter", name: "OpenRouter", id: openRouterModel),
+            (provider: "anthropic", name: "Anthropic", id: anthropicModel),
+            (provider: "xai", name: "xAI", id: xaiModel)
+        ]
+        if let invalid = models.first(where: { !Self.isValidModelID($0.id, provider: $0.provider) }) {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "That \(invalid.name) model ID is not valid"
+            alert.informativeText = invalid.provider == "openrouter"
+                ? "Use vendor/model: a vendor of up to 64 letters, digits, . _ or -, a slash, then a model of up to 128 letters, digits, . _ : + or -. Both parts start with a letter or digit. Nothing has been installed."
+                : "Use up to 128 letters, digits, . _ : + or -, starting with a letter or digit. Nothing has been installed."
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
         let key = openRouterKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if openRouter && !key.isEmpty && !isValidOpenRouterKey(key) {
             let alert = NSAlert()
@@ -841,15 +881,40 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Strict X.Y.Z without leading zeros, so the version typed into the Bot
+    /// command has exactly one spelling.
+    static func parseGrokVersion(_ value: String) -> [Int]? {
+        guard matchesEntirely(value, #"^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$"#) else { return nil }
+        return value.split(separator: ".").compactMap { Int($0) }
+    }
+
+    /// The single version gate for every action. Reviewed builds pass as-is;
+    /// only a build newer than every reviewed one may pass, and only with the
+    /// explicit experimental opt-in.
+    static func decideGrokVersion(_ version: String, allowUnreviewed: Bool) throws -> (version: String, unreviewed: Bool) {
+        if supportedGrokVersions.contains(version) { return (version, false) }
+        guard let parsed = parseGrokVersion(version),
+              let newestReviewed = supportedGrokVersions.compactMap(parseGrokVersion).max(by: { $0.lexicographicallyPrecedes($1) }),
+              newestReviewed.lexicographicallyPrecedes(parsed) else {
+            throw InstallerError.message("Grok Bot \(version) is not supported. This beta is pinned to \(supportedGrokVersion) and will not patch an unknown build. Nothing was changed.")
+        }
+        guard allowUnreviewed else {
+            throw InstallerError.message("Grok Bot \(version) is newer than the reviewed versions (\(supportedGrokVersion)). To try it anyway, check \"\(allowUnreviewedTitle)\". To add reviewed support, follow the host-probe steps in docs/VERSION-TRACKING.md. Nothing was changed.")
+        }
+        return (parsed.map(String.init).joined(separator: "."), true)
+    }
+
     private func validateGrokApp() throws {
+        // A failed check must not leave an earlier build's mode in diagnostics.
+        detectedGrokVersion = ""
+        unreviewedGrokVersion = false
         let plistPath = "\(grokAppPath)/Contents/Info.plist"
         guard let info = NSDictionary(contentsOfFile: plistPath) as? [String: Any] else {
             throw InstallerError.message("Install the official Grok Bot app in /Applications first.")
         }
         let version = info["CFBundleShortVersionString"] as? String ?? "unknown"
-        guard supportedGrokVersions.contains(version) else {
-            throw InstallerError.message("Grok Bot \(version) is not supported. This beta is pinned to \(supportedGrokVersion) and will not patch an unknown build.")
-        }
+        let accepted = try Self.decideGrokVersion(version, allowUnreviewed: allowUnreviewedGrokVersion)
+        // The vendor signature is mandatory in both modes.
         let verification = Process()
         verification.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
         verification.arguments = ["--verify", "--deep", "--strict", "-R", "=anchor apple generic and identifier \"com.anysphere.sand\" and certificate leaf[subject.OU] = \"DCNK4UB866\"", grokAppPath]
@@ -860,11 +925,19 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
         guard verification.terminationStatus == 0 else {
             throw InstallerError.message("The installed Grok Bot app does not have the expected valid vendor signature. Nothing was changed.")
         }
-        detectedGrokVersion = version
+        detectedGrokVersion = accepted.version
+        unreviewedGrokVersion = accepted.unreviewed
+        if accepted.unreviewed {
+            appendLog("Grok Bot \(accepted.version) is UNREVIEWED (experimental opt-in). The Bot host must pass structural checks instead of a reviewed hash.")
+        }
+    }
+
+    private var grokVersionLabel: String {
+        unreviewedGrokVersion ? "UNREVIEWED Grok Bot \(detectedGrokVersion) (experimental opt-in)" : "Grok Bot \(detectedGrokVersion)"
     }
 
     private func relaunchGrokWithDiagnostics() async throws {
-        appendLog("Verified Grok Bot \(detectedGrokVersion). Restarting with a local diagnostic port…")
+        appendLog("Verified \(grokVersionLabel). Restarting with a local diagnostic port…")
         await stopRunningGrok()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
@@ -1518,7 +1591,9 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
         openRouterKey: String
     ) async throws -> String {
         try validateGrokApp()
-        updateStatus("Step 1 of 6 · Grok Bot \(detectedGrokVersion) is supported.")
+        updateStatus(unreviewedGrokVersion
+            ? "Step 1 of 6 · Grok Bot \(detectedGrokVersion) is UNREVIEWED (experimental opt-in)."
+            : "Step 1 of 6 · Grok Bot \(detectedGrokVersion) is supported.")
         try await relaunchGrokWithDiagnostics()
         let client = CDPClient(url: try await browserWebSocketURL())
         let pageSession = try await mainPageSession(client)
@@ -1580,7 +1655,7 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
             "rm -rf /tmp/grokbot-router-installer/payload",
             "mkdir -p /tmp/grokbot-router-installer/payload",
             "tar -xzf /tmp/grokbot-router-installer/payload.tgz -C /tmp/grokbot-router-installer/payload --strip-components=1",
-            "if ROUTER_INSTALL_ATTEMPT=\(installAttempt) bash /tmp/grokbot-router-installer/payload/remote/install.sh --no-restart --grok-version \(detectedGrokVersion) --provider \(defaultProvider) --providers \(providers) --codex-model \(codexModel) --openrouter-model \(openRouterModel) --anthropic-model \(anthropicModel) --xai-model \(xaiModel); then clear; printf %s \(installPayload) | base64 -d; else code=$?; printf %s \(failurePayload) | base64 -d; echo $code; fi"
+            "if ROUTER_INSTALL_ATTEMPT=\(installAttempt) bash /tmp/grokbot-router-installer/payload/remote/install.sh --no-restart --grok-version \(detectedGrokVersion)\(unreviewedGrokVersion ? " --allow-unreviewed-version" : "") --provider \(defaultProvider) --providers \(providers) --codex-model \(codexModel) --openrouter-model \(openRouterModel) --anthropic-model \(anthropicModel) --xai-model \(xaiModel); then clear; printf %s \(installPayload) | base64 -d; else code=$?; printf %s \(failurePayload) | base64 -d; echo $code; fi"
         ])
         appendLog("Transferring a SHA-256-verified payload into the Bot computer…")
         let installVNC = try await typeRemoteCommandsResilient(commands, client: client, pageSession: pageSession)

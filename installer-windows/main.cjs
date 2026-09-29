@@ -11,12 +11,9 @@ const { createWorker } = require("tesseract.js");
 const execFileAsync = promisify(execFile);
 const SUPPORTED_GROK_VERSIONS = ["0.30.0", "0.36.0", "0.44.0"];
 const SUPPORTED_GROK_VERSION = SUPPORTED_GROK_VERSIONS.join(", ");
-let detectedGrokVersion = "0.30.0";
+let detectedGrokVersion = "";
+let detectedGrokUnreviewed = false;
 const CDP_PORT = 19222;
-const CODEX_MODELS = new Set(["gpt-6-astra", "gpt-6-astra-pro", "gpt-5.6-sol", "gpt-5.6-sol-pro", "gpt-5.6-terra", "gpt-5.6-luna"]);
-const OPENROUTER_MODELS = new Set(["anthropic/claude-sonnet-5", "anthropic/claude-opus-5", "anthropic/claude-fable-5.1", "anthropic/claude-haiku-4.5", "openai/gpt-6-astra", "openai/gpt-5.6-luna", "x-ai/grok-4.6", "google/gemini-3.8-flash", "moonshotai/kimi-k3", "deepseek/deepseek-v4-pro", "openrouter/free"]);
-const ANTHROPIC_MODELS = new Set(["claude-sonnet-5", "claude-opus-5", "claude-haiku-4-5", "claude-fable-5-1"]);
-const XAI_MODELS = new Set(["grok-4.6", "grok-4.5", "grok-4.3", "grok-build-0.1", "grok-4.20", "grok-4.20-multi-agent"]);
 const PROVIDER_IDS = new Set(["codex", "openrouter", "anthropic", "xai"]);
 
 let mainWindow = null;
@@ -71,6 +68,7 @@ const INTERESTING_DIAGNOSTIC_WORDS = Object.freeze([
   "SUPPORTEDVERSION",
   "ROUTERMARKER",
   "STOCKBACKUP",
+  "UNREVIEWED",
 ]);
 
 function redactedDiagnosticExcerpt(text) {
@@ -85,11 +83,19 @@ function redactedDiagnosticExcerpt(text) {
     .replace(/sk-[A-Za-z0-9_-]{12,}/gi, "[REDACTED_KEY]");
 }
 
+function grokModeDescription() {
+  if (!detectedGrokVersion) return "not verified";
+  return detectedGrokUnreviewed
+    ? `UNREVIEWED ${detectedGrokVersion} (experimental opt-in, structural host verification)`
+    : `reviewed ${detectedGrokVersion}`;
+}
+
 function makeDiagnosticReport(failure, terminalText = "", lastInstallerPhase = "unknown") {
   return [
     "GrokRouter safe diagnostic report",
     `Installer: ${app.getVersion()}`,
     `Supported Grok Bot: ${SUPPORTED_GROK_VERSION}`,
+    `Grok Bot mode: ${grokModeDescription()}`,
     `Windows: ${process.getSystemVersion()}`,
     `Architecture: ${process.arch}`,
     `Last installer phase: ${lastInstallerPhase}`,
@@ -232,7 +238,40 @@ function knownGrokPaths() {
   return [...new Set(candidates)];
 }
 
-async function locateAndValidateGrok() {
+// Strict X.Y.Z; Windows ProductVersion may carry a trailing ".0" fourth part.
+function parseGrokVersion(value) {
+  const match = /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})(?:\.0)?$/.exec(value);
+  return match ? match.slice(1, 4).map(Number) : null;
+}
+
+function compareGrokVersions(left, right) {
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index] !== right[index]) return left[index] - right[index];
+  }
+  return 0;
+}
+
+// Reviewed versions keep their exact host hashes. Only a build newer than every
+// reviewed one may opt into install.sh's structural host checks.
+function grokVersionDecision(rawVersion, allowUnreviewed) {
+  const version = String(rawVersion || "").trim();
+  const parsed = parseGrokVersion(version);
+  const unsupported = `Grok Bot ${version || "unknown"} is not supported. This beta is pinned to ${SUPPORTED_GROK_VERSION} and will not patch an unknown build. Nothing was changed.`;
+  if (!parsed) throw new Error(unsupported);
+  const normalized = parsed.join(".");
+  if (SUPPORTED_GROK_VERSIONS.includes(normalized)) return { version: normalized, unreviewed: false };
+  const newestReviewed = SUPPORTED_GROK_VERSIONS.map(parseGrokVersion)
+    .reduce((newest, candidate) => (compareGrokVersions(candidate, newest) > 0 ? candidate : newest));
+  if (compareGrokVersions(parsed, newestReviewed) <= 0) throw new Error(unsupported);
+  if (allowUnreviewed !== true) {
+    throw new Error(`Grok Bot ${normalized} is newer than the reviewed versions (${SUPPORTED_GROK_VERSION}). To try it anyway, check "Allow unreviewed Grok Bot version (experimental)". To add reviewed support, follow the host-probe steps in docs/VERSION-TRACKING.md. Nothing was changed.`);
+  }
+  return { version: normalized, unreviewed: true };
+}
+
+async function locateAndValidateGrok(allowUnreviewed) {
+  detectedGrokVersion = "";
+  detectedGrokUnreviewed = false;
   if (process.platform !== "win32") throw new Error("This GrokRouter build runs only on Windows.");
   const executable = knownGrokPaths().find((candidate) => fs.existsSync(candidate));
   if (!executable) throw new Error("Install the official Grok Bot app from the Windows Start-menu installer first.");
@@ -251,12 +290,10 @@ async function locateAndValidateGrok() {
     throw new Error("GrokRouter could not verify the installed Grok Bot Windows app.");
   }
   if (metadata.Status !== "Valid") throw new Error("The installed Grok Bot executable does not have a valid Windows signature. Nothing was changed.");
-  const version = String(metadata.Version || "").trim();
-  const matched = SUPPORTED_GROK_VERSIONS.find((supported) => version === supported || version === `${supported}.0`);
-  if (!matched) {
-    throw new Error(`Grok Bot ${version || "unknown"} is not supported. This beta is pinned to ${SUPPORTED_GROK_VERSION} and will not patch an unknown build.`);
-  }
-  detectedGrokVersion = matched;
+  const decision = grokVersionDecision(metadata.Version, allowUnreviewed);
+  detectedGrokVersion = decision.version;
+  detectedGrokUnreviewed = decision.unreviewed;
+  if (decision.unreviewed) log(`Grok Bot ${decision.version} is UNREVIEWED (experimental opt-in). The Bot host must pass structural checks instead of a reviewed hash; Restore Stock stays available.`);
   return executable;
 }
 
@@ -643,14 +680,30 @@ async function updateNativeWorkflows(client, pageSession, operation = "sync") {
   return stats;
 }
 
+// Model IDs are typed into the Bot terminal, so only shell-inert characters pass.
+const MODEL_ID_RULES = Object.freeze({
+  codex: ["Codex", /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}$/, "up to 128 letters, digits, or . _ : + - starting with a letter or digit"],
+  openrouter: ["OpenRouter", /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}$/, "vendor/model: a vendor of up to 64 letters, digits, or . _ -, a slash, then up to 128 letters, digits, or . _ : + -, each part starting with a letter or digit"],
+  anthropic: ["Anthropic", /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}$/, "up to 128 letters, digits, or . _ : + - starting with a letter or digit"],
+  xai: ["xAI", /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}$/, "up to 128 letters, digits, or . _ : + - starting with a letter or digit"],
+});
+
+function validatedModelID(provider, value) {
+  const [name, pattern, format] = MODEL_ID_RULES[provider];
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!pattern.test(trimmed)) throw new Error(`The ${name} model ID must be ${format}. Nothing was installed.`);
+  return trimmed;
+}
+
 function validatedInstallOptions(raw) {
   const providers = Array.isArray(raw.providers) ? [...new Set(raw.providers)] : [];
   if (!providers.length || providers.some((item) => !PROVIDER_IDS.has(item))) throw new Error("Choose at least one of Codex SDK, OpenRouter, Anthropic, or xAI.");
   if (!providers.includes(raw.defaultProvider)) throw new Error("The default provider must be enabled.");
-  if (!CODEX_MODELS.has(raw.codexModel)) throw new Error("Choose a packaged Codex model.");
-  if (!OPENROUTER_MODELS.has(raw.openRouterModel)) throw new Error("Choose a packaged OpenRouter model.");
-  if (!ANTHROPIC_MODELS.has(raw.anthropicModel)) throw new Error("Choose a packaged Anthropic model.");
-  if (!XAI_MODELS.has(raw.xaiModel)) throw new Error("Choose a packaged xAI model.");
+  // install.sh always receives all four models, so every one is validated.
+  const codexModel = validatedModelID("codex", raw.codexModel);
+  const openRouterModel = validatedModelID("openrouter", raw.openRouterModel);
+  const anthropicModel = validatedModelID("anthropic", raw.anthropicModel);
+  const xaiModel = validatedModelID("xai", raw.xaiModel);
   const openRouterKey = typeof raw.openRouterKey === "string" ? raw.openRouterKey.trim() : "";
   if (openRouterKey && (!openRouterKey.startsWith("sk-or-v1-") || openRouterKey.length < 33 || /\s/.test(openRouterKey))) {
     throw new Error("The OpenRouter key does not have the expected shape.");
@@ -658,17 +711,19 @@ function validatedInstallOptions(raw) {
   return {
     defaultProvider: raw.defaultProvider,
     providers,
-    codexModel: raw.codexModel,
-    openRouterModel: raw.openRouterModel,
-    anthropicModel: raw.anthropicModel,
-    xaiModel: raw.xaiModel,
+    codexModel,
+    openRouterModel,
+    anthropicModel,
+    xaiModel,
     openRouterKey,
   };
 }
 
 async function installRouter(executable, rawOptions) {
   const options = validatedInstallOptions(rawOptions);
-  setStatus(true, `Step 1 of 6 · Grok Bot ${detectedGrokVersion} is supported.`);
+  setStatus(true, detectedGrokUnreviewed
+    ? `Step 1 of 6 · Grok Bot ${detectedGrokVersion} is UNREVIEWED (experimental opt-in).`
+    : `Step 1 of 6 · Grok Bot ${detectedGrokVersion} is supported.`);
   await relaunchWithDiagnostics(executable);
   const client = new CDPClient(await browserWebSocketURL());
   try {
@@ -696,6 +751,7 @@ async function installRouter(executable, rawOptions) {
     const failurePayload = Buffer.from(`\nGROKROUTER_${installAttempt}_INSTALL_FAILED_UNKNOWN_CODE_`, "utf8").toString("base64");
     const chunks = [];
     for (let index = 0; index < encoded.length; index += 1_000) chunks.push(encoded.slice(index, index + 1_000));
+    const grokVersionArgs = `--grok-version ${detectedGrokVersion}${detectedGrokUnreviewed ? " --allow-unreviewed-version" : ""}`;
     const commands = ["mkdir -p /tmp/grokbot-router-installer", ": > /tmp/grokbot-router-installer/payload.b64"];
     commands.push(...chunks.map((chunk) => `printf %s ${chunk} >> /tmp/grokbot-router-installer/payload.b64`));
     commands.push(
@@ -704,7 +760,7 @@ async function installRouter(executable, rawOptions) {
       "rm -rf /tmp/grokbot-router-installer/payload",
       "mkdir -p /tmp/grokbot-router-installer/payload",
       "tar -xzf /tmp/grokbot-router-installer/payload.tgz -C /tmp/grokbot-router-installer/payload --strip-components=1",
-      `if ROUTER_INSTALL_ATTEMPT=${installAttempt} bash /tmp/grokbot-router-installer/payload/remote/install.sh --no-restart --grok-version ${detectedGrokVersion} --provider ${options.defaultProvider} --providers ${options.providers.join(",")} --codex-model ${options.codexModel} --openrouter-model ${options.openRouterModel} --anthropic-model ${options.anthropicModel} --xai-model ${options.xaiModel}; then clear; printf %s ${installPayload} | base64 -d; else code=$?; printf %s ${failurePayload} | base64 -d; echo $code; fi`,
+      `if ROUTER_INSTALL_ATTEMPT=${installAttempt} bash /tmp/grokbot-router-installer/payload/remote/install.sh --no-restart ${grokVersionArgs} --provider ${options.defaultProvider} --providers ${options.providers.join(",")} --codex-model ${options.codexModel} --openrouter-model ${options.openRouterModel} --anthropic-model ${options.anthropicModel} --xai-model ${options.xaiModel}; then clear; printf %s ${installPayload} | base64 -d; else code=$?; printf %s ${failurePayload} | base64 -d; echo $code; fi`,
     );
     log("Transferring a SHA-256-verified payload into the Bot computer…");
     const installVNC = await typeRemoteCommandsResilient(commands, client, pageSession);
@@ -766,7 +822,8 @@ async function sendRemoteAction(executable, action) {
 }
 
 async function runAction(action, payload) {
-  const executable = await locateAndValidateGrok();
+  // Only a strict boolean from the renderer opts into an unreviewed Grok Bot.
+  const executable = await locateAndValidateGrok(payload.allowUnreviewedVersion === true);
   try {
     return action === "install" ? await installRouter(executable, payload) : await sendRemoteAction(executable, action);
   } finally {
@@ -840,7 +897,7 @@ ipcMain.handle("grokrouter:copy-diagnostics", (event) => {
 
 ipcMain.handle("grokrouter:open-support", async (event) => {
   if (!event.senderFrame.url.startsWith("file://")) return false;
-  await shell.openExternal("https://github.com/promptadvisers/grokrouter/issues/new?template=installation-failure.yml");
+  await shell.openExternal("https://github.com/swcstudiospace/grokrouter/issues/new?template=installation-failure.yml");
   return true;
 });
 

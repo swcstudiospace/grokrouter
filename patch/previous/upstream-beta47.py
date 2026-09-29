@@ -1,3 +1,4 @@
+# Provenance: upstream promptadvisers/grokrouter beta.47 patch/router_patch.py (00a628c); retained verbatim only to authenticate upgrades.
 #!/usr/bin/env python3
 """Version-gated, reversible Grok Bot host adapter patch.
 
@@ -31,30 +32,12 @@ LEGACY_BACKUPS = (
     Path("/home/box/sand-host/host-main.cjs.grokbot-router.stock"),
     Path("/home/box/sand-host/host-main.cjs.grok-sdk-adapter.prepatch"),
 )
-DEFAULT_MANIFEST = Path(__file__).with_name("manifests")
-PREVIOUS_ADAPTERS = Path(__file__).with_name("previous")
-# Upstream beta.45 shipped the beta.46 executor under its own version string.
-PREVIOUS_VERSION_VARIANTS = {
-    "upstream-beta46.py": (('version: "0.1.0-beta.46"', 'version: "0.1.0-beta.45"'),),
-}
+DEFAULT_MANIFEST = Path(__file__).with_name("manifests") / "0.30.0.json"
 # Another public router also rewrites the same host. Its marker must never be
 # mistaken for a stock host, so structural verification refuses it outright.
 FOREIGN_MARKER = re.compile(r"opengrok|open_grok", re.IGNORECASE)
 TRUST_EXACT = "exact-allowlist"
-# Granted only by an explicit --unreviewed-version for a Grok Bot newer than
-# every reviewed manifest: the host passed structural verification instead of
-# matching a reviewed stock hash. Reviewed versions never receive it.
-TRUST_UNREVIEWED = "unreviewed-anchor-verified"
 TRUST_CACHE_SUFFIX = ".grokrouter-trust.json"
-VERSION_PATTERN = re.compile(r"\d+\.\d+\.\d+")
-# patch_text hooks these seams in every version beyond each manifest's own
-# requiredAnchors. Validation, probes, and diagnostics count them too, so a
-# live probe proves the whole patch surface, not only the manifest lines.
-PATCH_ANCHORS = (
-    "const memberResult = await runner.run(promptForAttempt, {",
-    "const extraction = await extractMemories({",
-    "const narrative = await summarizeEpisode({",
-)
 
 
 EXECUTOR_CODE = r'''
@@ -132,13 +115,13 @@ function getGrokBotRouterChildEnv() {
 function appendGrokBotRouterHostError(config, error) {
   try {
     const diagnostic = String(error?.message || error || "Unknown host bridge error")
-      .replace(/sk-or-v1-[a-z0-9_-]+|sk-[a-z0-9_-]+|gh[opsu]_[a-z0-9_-]+|xai-[a-z0-9_-]+|Bearer\s+[a-z0-9._-]+|ey[a-z0-9_-]{20,}\.[a-z0-9._-]+/gi, "[REDACTED]")
+      .replace(/sk-or-v1-[a-z0-9_-]+|sk-[a-z0-9_-]+|gh[opsu]_[a-z0-9_-]+/gi, "[REDACTED]")
       .replace(/\s+/g, " ")
       .slice(0, 500);
     const auditPath = config?.auditPath || "/home/box/sand-data/grokbot-router/audit.jsonl";
     require("node:fs").appendFileSync(auditPath, `${JSON.stringify({
       timestamp: new Date().toISOString(),
-      version: "0.1.0-beta.48",
+      version: "0.1.0-beta.47",
       event: "host_bridge_error",
       diagnostic
     })}\n`, { encoding: "utf8", mode: 0o600 });
@@ -201,10 +184,7 @@ function runGrokBotRouter(config, messages, tools, sessionOptions) {
         return;
       }
       if (!payload?.ok || typeof payload.text !== "string") {
-        const failure = new Error(payload?.error || "Provider returned no response");
-        failure.routerCode = typeof payload?.errorCode === "string" ? payload.errorCode : "";
-        failure.routerHint = typeof payload?.hint === "string" ? payload.hint : "";
-        reject(failure);
+        reject(new Error(payload?.error || "Provider returned no response"));
         return;
       }
       resolve(payload);
@@ -230,12 +210,8 @@ var GrokBotRouterPromptExecutor = class extends MockPromptExecutor {
       .catch((error) => {
         console.error("[grokbot-router] Provider turn failed:", error?.stack || error);
         appendGrokBotRouterHostError(this.config, error);
-        const code = typeof error?.routerCode === "string" && error.routerCode ? error.routerCode : "unknown";
-        const hint = typeof error?.routerHint === "string" && error.routerHint
-          ? error.routerHint
-          : "Open this Bot's computer and run grokbot-router errors for the recorded reason.";
         return {
-          text: `Model Router error [${code}]. ${hint} Full detail: run grokbot-router errors in this Bot's computer.`,
+          text: "Model Router error. Open this Bot's computer and run grokbot-router doctor for a private diagnostic.",
           toolCalls: [],
           usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
           bridgeError: true
@@ -300,16 +276,10 @@ SESSION_CODE = r'''
       // Native maintenance sessions have their own structured-text contract.
       // Keep the host's original inference path for those sessions.
       if (grokBotRouterConfig && sessionOptions?.isSummarizationSession !== true) {
-        const routerDefaults = {
-          codex: grokBotRouterConfig.codexModel || "gpt-5.6-sol",
-          openrouter: grokBotRouterConfig.openRouterModel || "anthropic/claude-sonnet-5",
-          anthropic: grokBotRouterConfig.anthropicModel || "claude-sonnet-5",
-          xai: grokBotRouterConfig.xaiModel || "grok-4.6"
-        };
-        const provider = Object.prototype.hasOwnProperty.call(routerDefaults, grokBotRouterConfig.provider)
-          ? grokBotRouterConfig.provider
-          : "codex";
-        const modelId = routerDefaults[provider];
+        const provider = grokBotRouterConfig.provider === "openrouter" ? "openrouter" : "codex";
+        const modelId = provider === "openrouter"
+          ? grokBotRouterConfig.openRouterModel || "anthropic/claude-sonnet-4.6"
+          : grokBotRouterConfig.codexModel || "gpt-5.6-sol";
         return {
           getExecutor: (taskOptions = {}) => createGrokBotRouterPromptExecutor(grokBotRouterConfig, {
             ...sessionOptions,
@@ -355,12 +325,10 @@ def validate_stock_hosts(value: Any, label: str) -> list[dict[str, Any]]:
 
 
 def validate_anchor_policy(value: Any) -> dict[str, Any]:
-    """Read the manifest's structural size band.
+    """Read legacy size-band settings for diagnostics only.
 
     The historical enabled flag never grants stock provenance. Only reviewed
-    hash/size pairs authorize installation, restoration, or automatic repair
-    of a reviewed version. The band bounds structural verification, which
-    grants trust only through an explicit unreviewed-version opt-in.
+    hash/size pairs authorize installation, restoration, or automatic repair.
     """
     if value is None:
         return {"enabled": False, "minBytes": 0, "maxBytes": 0}
@@ -392,114 +360,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
     return manifest
 
 
-def _version_tuple(value: Any) -> tuple[int, ...]:
-    return tuple(int(part) for part in re.findall(r"\d+", str(value)))
-
-
-def _version_key(manifest: dict[str, Any]) -> tuple[int, ...]:
-    return _version_tuple(manifest.get("grokBotVersion", "0"))
-
-
-def _anchors_once(path: Path, manifest: dict[str, Any]) -> bool:
-    """Return whether every manifest anchor appears exactly once in ``path``."""
-    if not path.exists():
-        return False
-    try:
-        source = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return False
-    return all(source.count(anchor) == 1 for anchor in manifest["requiredAnchors"])
-
-
-def _shipped_manifests(path: Path) -> list[dict[str, Any]]:
-    """Load every valid manifest in ``path``, newest version first."""
-    if not path.is_dir():
-        raise PatchError(f"Cannot read compatibility manifest {path}: not found")
-    manifests = []
-    for candidate in sorted(path.glob("*.json")):
-        try:
-            manifests.append(load_manifest(candidate))
-        except PatchError:
-            continue
-    if not manifests:
-        raise PatchError(f"No compatibility manifest found in {path}")
-    manifests.sort(key=_version_key, reverse=True)
-    return manifests
-
-
-def _anchor_match(manifests: list[dict[str, Any]], targets: list[Path]) -> dict[str, Any] | None:
-    for manifest in manifests:
-        if any(_anchors_once(target, manifest) for target in targets):
-            return manifest
-    return None
-
-
-def resolve_manifest(path: Path, host: Path, backup: Path | None = None) -> dict[str, Any]:
-    """Load one manifest file, or select the right one from a directory.
-
-    Each supported Grok Bot version has its own manifest. When the desktop app
-    version is known (the installers verify it and ``install.sh`` records it
-    as ``grokBotVersion``), callers pass that version's manifest file and it is
-    used exactly. Otherwise a directory selects: an exact stock-hash match on
-    the live host or its backup, then a host whose required anchors all appear
-    exactly once (a patched host keeps its anchors), newest version first.
-    Nothing is ever loosened: the chosen manifest still applies its own exact
-    stock-hash, anchor, and marker gates.
-    """
-    if path.is_file():
-        return load_manifest(path)
-    manifests = _shipped_manifests(path)
-    targets = [target for target in (host, backup) if target is not None]
-    for manifest in manifests:
-        if any(is_allowed_stock(target, manifest) for target in targets):
-            return manifest
-    return _anchor_match(manifests, targets) or manifests[0]
-
-
-def resolve_template_manifest(path: Path, host: Path, backup: Path | None = None) -> dict[str, Any]:
-    """Select the reviewed manifest that patches an unreviewed newer Grok Bot.
-
-    This is resolve_manifest's anchor path alone: the newest shipped manifest
-    whose required anchors all appear exactly once on the live host or its
-    stock backup. Without such a manifest the seams have moved, so there is no
-    fallback to the newest version.
-    """
-    targets = [target for target in (host, backup) if target is not None]
-    manifest = _anchor_match(_shipped_manifests(path), targets)
-    if manifest is None:
-        raise PatchError(
-            "No shipped manifest's required anchors all appear exactly once on this host; "
-            "this Grok Bot build needs a reviewed host probe (docs/VERSION-TRACKING.md). Nothing was changed."
-        )
-    return manifest
-
-
-def require_unreviewed_version(
-    version: str,
-    manifest: dict[str, Any],
-    manifests: Path = DEFAULT_MANIFEST,
-) -> None:
-    """Refuse the structural-trust opt-in unless ``version`` is strictly newer.
-
-    Reviewed versions keep their exact stock-hash gates, so an opt-in naming a
-    reviewed, older, or in-between version never reaches structural trust.
-    """
-    if not VERSION_PATTERN.fullmatch(version):
-        raise PatchError(f"Unreviewed Grok Bot version {version!r} is not X.Y.Z. Nothing was changed.")
-    newest = max(_version_key(item) for item in (manifest, *_shipped_manifests(manifests)))
-    if _version_tuple(version) <= newest:
-        raise PatchError(
-            f"Grok Bot {version} is not newer than every reviewed version "
-            f"({'.'.join(map(str, newest))}); structural verification is only for "
-            "unreviewed newer versions. Nothing was changed."
-        )
-
-
-def load_host_registry(
-    path: Path,
-    manifest: dict[str, Any],
-    optional_version: bool = False,
-) -> dict[str, Any] | None:
+def load_host_registry(path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
     try:
         registry = json.loads(path.read_text())
     except Exception as error:
@@ -507,10 +368,6 @@ def load_host_registry(
     if registry.get("schemaVersion") != 1:
         raise PatchError("Signed host registry has an unsupported schemaVersion")
     if registry.get("grokBotVersion") != manifest.get("grokBotVersion"):
-        # A registry for another supported version adds nothing to this
-        # host's exact list; the manifest's own gates still apply in full.
-        if optional_version:
-            return None
         raise PatchError("Signed host registry targets a different Grok Bot version")
     registry["stockHosts"] = validate_stock_hosts(
         registry.get("stockHosts"), "Signed host registry"
@@ -562,17 +419,13 @@ def anchor_verification(
     path: Path,
     manifest: dict[str, Any],
     digest: str | None = None,
-    unreviewed_version: str | None = None,
 ) -> dict[str, Any]:
-    """Check structural compatibility; stock provenance only when opted in.
+    """Check structural compatibility for diagnostics, never stock provenance.
 
-    Returns ``{"ok", "reason", "patchDryRun"}``. ``ok`` can only become true
-    for an explicit unreviewed newer version: no router marker, every anchor
-    exactly once, a passing read-only patch plus ``node --check``, and a byte
-    count inside the manifest's band. The verdict is cached beside the file,
-    keyed by its SHA-256, byte count, router marker version, trust mode, and
-    the manifest policy, because the lifecycle watchdog re-checks the backup
-    every few seconds and the read-only patch of a 25 MB host is not free.
+    Returns ``{"ok", "reason", "patchDryRun"}``. The verdict is cached beside
+    the file, keyed by its SHA-256, byte count, router marker version, and the
+    manifest policy, because the lifecycle watchdog re-checks the backup every
+    few seconds and the read-only patch of a 25 MB host is not free.
     """
     policy = manifest.get("anchorVerifiedHosts") or validate_anchor_policy(None)
     if not path.exists():
@@ -583,7 +436,7 @@ def anchor_verification(
         "sha256": digest,
         "bytes": byte_count,
         "marker": MARKER,
-        "trustPolicy": "unreviewed-structural-v1" if unreviewed_version else "exact-stock-v1",
+        "trustPolicy": "exact-stock-v1",
         "anchors": list(manifest.get("requiredAnchors", [])),
         "policy": policy,
     }
@@ -613,13 +466,6 @@ def anchor_verification(
                 result["reason"] = f"the host is smaller than expected ({byte_count} bytes)"
             elif policy["maxBytes"] and byte_count > policy["maxBytes"]:
                 result["reason"] = f"the host is larger than expected ({byte_count} bytes)"
-            elif unreviewed_version:
-                # Fail closed: an unbounded band would accept any host size.
-                if policy["maxBytes"]:
-                    result["ok"] = True
-                    result["reason"] = "ok"
-                else:
-                    result["reason"] = "the template manifest defines no size band for unreviewed versions"
             elif not policy["enabled"]:
                 result["reason"] = "structural verification is disabled by the compatibility manifest"
             else:
@@ -636,15 +482,12 @@ def host_trust(
     path: Path,
     manifest: dict[str, Any],
     registry: dict[str, Any] | None = None,
-    unreviewed_version: str | None = None,
 ) -> str | None:
     """Return why ``path`` is trusted as a stock host, or ``None``."""
     if not path.exists():
         return None
     if is_allowed_stock(path, manifest, registry):
         return TRUST_EXACT
-    if unreviewed_version and anchor_verification(path, manifest, unreviewed_version=unreviewed_version)["ok"]:
-        return TRUST_UNREVIEWED
     return None
 
 
@@ -652,20 +495,14 @@ def is_trusted_stock(
     path: Path,
     manifest: dict[str, Any],
     registry: dict[str, Any] | None = None,
-    unreviewed_version: str | None = None,
 ) -> bool:
-    return host_trust(path, manifest, registry, unreviewed_version) is not None
-
-
-def patch_anchor_counts(source: str) -> list[int]:
-    return [source.count(anchor) for anchor in PATCH_ANCHORS]
+    return host_trust(path, manifest, registry) is not None
 
 
 def inspect_host(
     host: Path,
     manifest: dict[str, Any],
     registry: dict[str, Any] | None = None,
-    unreviewed_version: str | None = None,
 ) -> dict[str, Any]:
     if not host.exists():
         return {
@@ -678,24 +515,19 @@ def inspect_host(
     digest = sha256(host)
     byte_count = host.stat().st_size
     anchors = [source.count(anchor) for anchor in manifest.get("requiredAnchors", [])]
-    patch_anchors = patch_anchor_counts(source)
-    verification = anchor_verification(host, manifest, digest, unreviewed_version)
+    verification = anchor_verification(host, manifest, digest)
     if is_allowed_stock(host, manifest, registry):
         trust: str | None = TRUST_EXACT
-    elif verification["ok"]:
-        trust = TRUST_UNREVIEWED
     else:
         trust = None
     if MARKER in source:
         status = "patched"
     elif trust == TRUST_EXACT:
         status = "known-stock"
-    elif trust == TRUST_UNREVIEWED:
-        status = "unreviewed-anchor-verified-stock"
     else:
         status = "unknown-stock-candidate"
     return {
-        "ok": trust is not None and all(count == 1 for count in (*anchors, *patch_anchors)),
+        "ok": trust is not None and all(count == 1 for count in anchors),
         "status": status,
         "host": str(host),
         "hostSha256": digest,
@@ -704,7 +536,6 @@ def inspect_host(
         "trustReason": verification["reason"] if trust is None else "ok",
         "cloudArchitecture": platform.machine(),
         "anchorCounts": anchors,
-        "patchAnchorCounts": patch_anchors,
         "patchDryRun": verification["patchDryRun"],
         "routerMarker": MARKER in source,
         "legacyMarker": bool(LEGACY_MARKER.search(source)),
@@ -716,14 +547,12 @@ def compatibility_report(
     host: Path,
     manifest: dict[str, Any],
     registry: dict[str, Any] | None = None,
-    unreviewed_version: str | None = None,
 ) -> str:
-    report = inspect_host(host, manifest, registry, unreviewed_version)
+    report = inspect_host(host, manifest, registry)
     digest = str(report.get("hostSha256") or "missing")
     first = digest[:32]
     second = digest[32:]
     counts = ",".join(str(value) for value in report.get("anchorCounts", [])) or "missing"
-    patch_counts = ",".join(str(value) for value in report.get("patchAnchorCounts", [])) or "missing"
     return "\n".join(
         [
             f"HOSTSHA1={first}",
@@ -731,7 +560,6 @@ def compatibility_report(
             f"HOSTBYTES={report.get('hostBytes', 'missing')}",
             f"CLOUDARCH={report.get('cloudArchitecture', 'unknown')}",
             f"ANCHORS={counts}",
-            f"PATCHANCHORS={patch_counts}",
             f"PATCHDRYRUN={str(report.get('patchDryRun', 'unknown')).upper()}",
             f"HOSTTRUST={str(report.get('hostTrust') or 'none').upper()}",
         ]
@@ -739,7 +567,7 @@ def compatibility_report(
 
 
 def validate_anchors(source: str, manifest: dict[str, Any]) -> None:
-    for anchor in (*manifest.get("requiredAnchors", []), *PATCH_ANCHORS):
+    for anchor in manifest.get("requiredAnchors", []):
         count = source.count(anchor)
         if count != 1:
             raise PatchError(f"Host anchor count for {anchor!r} was {count}; expected 1")
@@ -764,10 +592,7 @@ def patch_text(source: str) -> str:
 
     session_pattern = re.compile(
         r"(createSession\(onRequestId, sessionOptions\) \{\n\s+)"
-        # Grok Bot 0.30.0 read the mock response from the environment; 0.44.0
-        # reads it from the executor options. Both sit on the first line of
-        # the same session factory, which is the seam the router hooks.
-        r"(const mockResponse = (?:process\.env\.SAND_AGENT_MOCK_RESPONSE|options2\.agentMockResponse);)"
+        r"(const mockResponse = process\.env\.SAND_AGENT_MOCK_RESPONSE;)"
     )
     source, session_count = session_pattern.subn(
         lambda match: f"{match.group(1)}{SESSION_CODE.lstrip()}\n\n      {match.group(2)}",
@@ -798,7 +623,7 @@ def patch_text(source: str) -> str:
     if identity_count != 1:
         raise PatchError(f"Session identity anchor count was {identity_count}; expected 1")
 
-    group_anchor = PATCH_ANCHORS[0]
+    group_anchor = "const memberResult = await runner.run(promptForAttempt, {"
     if source.count(group_anchor) != 1:
         raise PatchError("Group member dispatch anchor must occur exactly once")
     source = source.replace(group_anchor, group_anchor + "\n" + """
@@ -847,47 +672,32 @@ def timestamp_backup(path: Path, label: str) -> Path:
     return destination
 
 
-def previous_adapter_outputs(original: str):
-    """Yield each published earlier adapter's output for ``original``.
-
-    patch/previous/ holds those transformations verbatim, only so an upgrade
-    can authenticate a live host they wrote. A module that cannot patch this
-    host produced nothing here, so it is skipped.
-    """
-    for path in sorted(PREVIOUS_ADAPTERS.glob("*.py")):
-        try:
-            spec = importlib.util.spec_from_file_location(
-                f"grokrouter_previous_{path.stem.replace('-', '_')}", path
-            )
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            yield module.patch_text(original)
-            for old, new in PREVIOUS_VERSION_VARIANTS.get(path.name, ()):
-                module.EXECUTOR_CODE = module.EXECUTOR_CODE.replace(old, new)
-                yield module.patch_text(original)
-        except Exception:
-            continue
-
-
 def matches_adapter(host: Path, stock: Path, manifest: dict[str, Any], previous: bool = False) -> bool:
     """Authenticate router output by reconstructing it from a trusted original.
 
     A marker alone is not evidence that we wrote a file. Callers must first
     verify the stock hash/size against the reviewed manifest or registry.
-    ``previous`` also accepts a byte-exact output of any published earlier
-    adapter, which only an upgrade may replace.
     """
     if not host.exists() or not stock.exists():
         return False
     try:
         original = stock.read_text()
         validate_anchors(original, manifest)
-        live = host.read_bytes()
-        if live == patch_text(original).encode("utf-8"):
-            return True
+        if previous:
+            spec = importlib.util.spec_from_file_location(
+                "grokrouter_previous_adapter", Path(__file__).with_name("previous_adapter.py")
+            )
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            expected = module.patch_text(original)
+            module.EXECUTOR_CODE = module.EXECUTOR_CODE.replace('version: "0.1.0-beta.46"', 'version: "0.1.0-beta.45"')
+            if host.read_bytes() == module.patch_text(original).encode("utf-8"):
+                return True
+        else:
+            expected = patch_text(original)
+        return host.read_bytes() == expected.encode("utf-8")
     except Exception:
         return False
-    return previous and any(live == output.encode("utf-8") for output in previous_adapter_outputs(original))
 
 
 def verified_stock_source(
@@ -896,36 +706,28 @@ def verified_stock_source(
     manifest: dict[str, Any],
     allow_unknown: bool,
     registry: dict[str, Any] | None = None,
-    unreviewed_version: str | None = None,
 ) -> Path:
     if host.exists():
         current = host.read_text(errors="replace")
         if MARKER not in current and not LEGACY_MARKER.search(current):
-            if allow_unknown or is_trusted_stock(host, manifest, registry, unreviewed_version):
+            if allow_unknown or is_trusted_stock(host, manifest, registry):
                 return host
         else:
             # An upgrade may use a backup only when it reproduces the live
             # router output exactly. Unknown replacements and foreign routers
             # must never be silently downgraded from an older backup.
             for candidate in (backup, *LEGACY_BACKUPS):
-                if candidate.exists() and (allow_unknown or is_trusted_stock(candidate, manifest, registry, unreviewed_version)):
-                    if matches_adapter(host, candidate, manifest, previous=True):
+                if candidate.exists() and (allow_unknown or is_trusted_stock(candidate, manifest, registry)):
+                    if matches_adapter(host, candidate, manifest) or matches_adapter(host, candidate, manifest, previous=True):
                         return candidate
-    reason = (
-        anchor_verification(host, manifest, unreviewed_version=unreviewed_version)["reason"]
-        if host.exists()
-        else "host file is missing"
-    )
-    lines = [
+    reason = anchor_verification(host, manifest)["reason"] if host.exists() else "host file is missing"
+    raise PatchError(
         f"This Grok Bot computer's host did not pass GrokRouter's stock-host checks: {reason}. "
         "The live host was not replaced from a backup. Use explicit Restore Stock only when appropriate. "
-        "Nothing was changed.",
-        compatibility_report(host, manifest, registry, unreviewed_version),
-        f"SUPPORTEDVERSION={manifest.get('grokBotVersion')}",
-    ]
-    if unreviewed_version:
-        lines.append(f"UNREVIEWEDVERSION={unreviewed_version}")
-    raise PatchError("\n".join(lines))
+        "Nothing was changed.\n"
+        f"{compatibility_report(host, manifest, registry)}\n"
+        f"SUPPORTEDVERSION={manifest.get('grokBotVersion')}"
+    )
 
 
 def install(
@@ -935,11 +737,10 @@ def install(
     dry_run: bool,
     allow_unknown: bool,
     registry: dict[str, Any] | None = None,
-    unreviewed_version: str | None = None,
 ) -> dict[str, Any]:
     if not host.exists():
         raise PatchError(f"Host not found: {host}")
-    stock = verified_stock_source(host, backup, manifest, allow_unknown, registry, unreviewed_version)
+    stock = verified_stock_source(host, backup, manifest, allow_unknown, registry)
     if matches_adapter(host, stock, manifest):
         return {
             "ok": True,
@@ -947,7 +748,7 @@ def install(
             "host": str(host),
             "hostSha256": sha256(host),
         }
-    trust = host_trust(stock, manifest, registry, unreviewed_version) or ("development-override" if allow_unknown else None)
+    trust = host_trust(stock, manifest, registry) or ("development-override" if allow_unknown else None)
     source = stock.read_text()
     validate_anchors(source, manifest)
     patched = patch_text(source)
@@ -995,20 +796,19 @@ def restore(
     dry_run: bool,
     allow_unknown: bool,
     registry: dict[str, Any] | None = None,
-    unreviewed_version: str | None = None,
 ) -> dict[str, Any]:
     if not backup.exists():
         for legacy in LEGACY_BACKUPS:
-            if legacy.exists() and (allow_unknown or is_trusted_stock(legacy, manifest, registry, unreviewed_version)):
+            if legacy.exists() and (allow_unknown or is_trusted_stock(legacy, manifest, registry)):
                 backup.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(legacy, backup)
                 break
     if not backup.exists():
         raise PatchError(f"Verified stock backup not found: {backup}")
-    if not allow_unknown and not is_trusted_stock(backup, manifest, registry, unreviewed_version):
+    if not allow_unknown and not is_trusted_stock(backup, manifest, registry):
         raise PatchError(
             f"Stock backup did not pass the stock-host checks: {sha256(backup)} "
-            f"({anchor_verification(backup, manifest, unreviewed_version=unreviewed_version)['reason']})"
+            f"({anchor_verification(backup, manifest)['reason']})"
         )
     if dry_run:
         return {"ok": True, "status": "restore-dry-run", "stockBackup": str(backup)}
@@ -1032,12 +832,11 @@ def doctor(
     manifest: dict[str, Any],
     allow_unknown: bool = False,
     registry: dict[str, Any] | None = None,
-    unreviewed_version: str | None = None,
 ) -> dict[str, Any]:
     host_exists = host.exists()
     backup_exists = backup.exists()
     host_text = host.read_text(errors="replace") if host_exists else ""
-    backup_trust = host_trust(backup, manifest, registry, unreviewed_version) if backup_exists else None
+    backup_trust = host_trust(backup, manifest, registry) if backup_exists else None
     return {
         "ok": bool(
             host_exists
@@ -1056,9 +855,6 @@ def doctor(
         "stockBackupSha256": sha256(backup) if backup_exists else None,
         "stockBackupVerified": backup_trust is not None,
         "stockBackupTrust": backup_trust,
-        "stockBackupPatchAnchorCounts": (
-            patch_anchor_counts(backup.read_text(errors="replace")) if backup_exists else None
-        ),
         "developmentOverride": allow_unknown,
         "supportedVersion": manifest.get("grokBotVersion"),
     }
@@ -1075,25 +871,8 @@ def main() -> int:
     action.add_argument("--restore", action="store_true", help="restore the verified stock host")
     action.add_argument("--doctor", action="store_true", help="inspect installation health")
     action.add_argument("--inspect", action="store_true", help="print a non-secret host compatibility report")
-    action.add_argument(
-        "--resolve-version",
-        action="store_true",
-        help="print the Grok Bot version whose manifest --manifest selects for this host",
-    )
-    action.add_argument(
-        "--resolve-template",
-        action="store_true",
-        help="print the newest manifest version in the --manifest directory whose anchors all "
-        "appear exactly once on this host or its backup (template for an unreviewed version)",
-    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--allow-unknown-host", action="store_true", help="development only")
-    parser.add_argument(
-        "--unreviewed-version",
-        metavar="VERSION",
-        help="experimental opt-in: trust a structurally verified host for this Grok Bot version, "
-        "which must be newer than every reviewed manifest; --manifest is its template",
-    )
     parser.add_argument("--host", type=Path, default=DEFAULT_HOST)
     parser.add_argument("--backup", type=Path, default=DEFAULT_BACKUP)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
@@ -1101,40 +880,16 @@ def main() -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    if args.resolve_template:
-        version = str(resolve_template_manifest(args.manifest, args.host, args.backup).get("grokBotVersion") or "")
-        if args.json:
-            print(json.dumps({"ok": bool(version), "grokBotVersion": version}, indent=2, sort_keys=True))
-        else:
-            print(version)
-        return 0 if version else 1
-    manifest = resolve_manifest(args.manifest, args.host, args.backup)
-    if args.resolve_version:
-        # Used when the desktop app version is unknown: a manifest directory
-        # selects by exact stock hash, then anchors, newest version first.
-        version = str(manifest.get("grokBotVersion") or "")
-        if args.json:
-            print(json.dumps({"ok": bool(version), "grokBotVersion": version}, indent=2, sort_keys=True))
-        else:
-            print(version)
-        return 0 if version else 1
-    unreviewed = args.unreviewed_version
-    if unreviewed is not None:
-        require_unreviewed_version(unreviewed, manifest)
-    registry = None
-    if args.host_registry:
-        registry = load_host_registry(args.host_registry, manifest, optional_version=True)
+    manifest = load_manifest(args.manifest)
+    registry = load_host_registry(args.host_registry, manifest) if args.host_registry else None
     if args.doctor:
-        result = doctor(args.host, args.backup, manifest, args.allow_unknown_host, registry, unreviewed)
+        result = doctor(args.host, args.backup, manifest, args.allow_unknown_host, registry)
     elif args.inspect:
-        result = inspect_host(args.host, manifest, registry, unreviewed)
+        result = inspect_host(args.host, manifest, registry)
     elif args.restore:
-        result = restore(args.host, args.backup, manifest, args.dry_run, args.allow_unknown_host, registry, unreviewed)
+        result = restore(args.host, args.backup, manifest, args.dry_run, args.allow_unknown_host, registry)
     else:
-        result = install(args.host, args.backup, manifest, args.dry_run, args.allow_unknown_host, registry, unreviewed)
-    if unreviewed is not None:
-        result["unreviewedVersion"] = unreviewed
-        result["templateManifestVersion"] = manifest.get("grokBotVersion")
+        result = install(args.host, args.backup, manifest, args.dry_run, args.allow_unknown_host, registry)
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:

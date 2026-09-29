@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -294,10 +295,6 @@ class MockPromptExecutor {
         )
         self.assertEqual(result["status"], "dry-run")
 
-    def test_shipped_manifest_requires_exact_hashes(self):
-        manifest = router_patch.load_manifest(PROJECT_ROOT / "patch" / "manifests" / "0.30.0.json")
-        self.assertFalse(manifest["anchorVerifiedHosts"]["enabled"])
-
     def test_structural_policy_cannot_authorize_a_modified_host(self):
         self.manifest["anchorVerifiedHosts"] = {"enabled": True, "minBytes": 0, "maxBytes": 0}
         self.host.write_text(STOCK_SOURCE + "globalThis.nonStockModification = true;\n")
@@ -342,16 +339,30 @@ class MockPromptExecutor {
         router_patch.restore(self.host, self.backup, self.manifest, False, False)
         self.assertEqual(self.host.read_text(), STOCK_SOURCE)
 
-    def test_published_adapter_upgrade_requires_exact_reconstruction(self):
-        spec = importlib.util.spec_from_file_location("previous", PROJECT_ROOT / "patch/previous_adapter.py")
-        previous = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(previous)
-        self.backup.write_text(STOCK_SOURCE)
-        self.host.write_text(previous.patch_text(STOCK_SOURCE))
-        result = router_patch.install(self.host, self.backup, self.manifest, False, False)
-        self.assertIn(result["status"], ("installed", "already-installed"))
-        self.assertEqual(self.host.read_text(), router_patch.patch_text(STOCK_SOURCE))
-        self.assertTrue(router_patch.doctor(self.host, self.backup, self.manifest)["ok"])
+    def test_every_published_adapter_upgrades_in_place_and_only_byte_exactly(self):
+        fixture = (PROJECT_ROOT / "tests" / "fixtures" / "host-main.cjs").read_text()
+        self.backup.write_text(fixture)
+        self.manifest["stockHosts"] = [{"sha256": router_patch.sha256(self.backup), "bytes": self.backup.stat().st_size}]
+        current = router_patch.patch_text(fixture)
+        published = list(router_patch.previous_adapter_outputs(fixture))
+        # Every retained transformation (and version variant) must patch the
+        # fixture, or its upgrade path would go untested.
+        expected = len(list(router_patch.PREVIOUS_ADAPTERS.glob("*.py"))) + sum(
+            len(variants) for variants in router_patch.PREVIOUS_VERSION_VARIANTS.values())
+        self.assertEqual(len(set(published)), expected)
+        for output in published:
+            with self.subTest(adapter=output[output.find('version: "'):][:30]):
+                self.assertNotEqual(output, current)
+                self.host.write_text(output)
+                self.assertEqual(router_patch.install(self.host, self.backup, self.manifest, False, False)["status"], "installed")
+                self.assertEqual(self.host.read_text(), current)
+                self.assertTrue(router_patch.doctor(self.host, self.backup, self.manifest)["ok"])
+                middle = len(output) // 2
+                tampered = output[:middle] + ("#" if output[middle] != "#" else "%") + output[middle + 1:]
+                self.host.write_text(tampered)
+                with self.assertRaisesRegex(router_patch.PatchError, "live host was not replaced"):
+                    router_patch.install(self.host, self.backup, self.manifest, False, False)
+                self.assertEqual(self.host.read_text(), tampered)
 
     def test_exact_reviewed_replacement_updates_backup(self):
         self.backup.write_text(STOCK_SOURCE)
@@ -378,10 +389,6 @@ class MockPromptExecutor {
             router_patch.install(
                 self.host, self.backup, self.manifest, dry_run=True, allow_unknown=False
             )
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class MultiVersionManifestTests(unittest.TestCase):
@@ -441,13 +448,16 @@ class MultiVersionManifestTests(unittest.TestCase):
         router_patch.restore(self.new_host, self.backup, manifest, dry_run=False, allow_unknown=False)
         self.assertEqual(self.new_host.read_text(), self.NEW_SOURCE)
 
-    def test_shipped_manifests_cover_both_supported_versions(self):
+    def test_shipped_manifests_are_exactly_the_supported_versions(self):
         shipped = PROJECT_ROOT / "patch" / "manifests"
-        versions = sorted(router_patch.load_manifest(path)["grokBotVersion"] for path in shipped.glob("*.json"))
-        self.assertEqual(versions, ["0.30.0", "0.44.0"])
-        new = router_patch.load_manifest(shipped / "0.44.0.json")
-        self.assertIn("const mockResponse = options2.agentMockResponse;", new["requiredAnchors"])
-        self.assertEqual(new["stockHosts"][0]["bytes"], 28264284)
+        supported = json.loads((PROJECT_ROOT / "compatibility" / "supported-apps.json").read_text())["versions"]
+        manifests = {path.stem: router_patch.load_manifest(path) for path in shipped.glob("*.json")}
+        self.assertEqual(sorted(manifests), sorted(supported))
+        for version, manifest in manifests.items():
+            self.assertEqual(manifest["grokBotVersion"], version)
+            # Reviewed versions trust exact stock hashes only.
+            self.assertFalse(manifest["anchorVerifiedHosts"]["enabled"])
+        self.assertIn("const mockResponse = options2.agentMockResponse;", manifests["0.44.0"]["requiredAnchors"])
 
     def test_registry_for_another_version_is_ignored_when_optional(self):
         manifest = router_patch.resolve_manifest(self.manifests, self.new_host)
@@ -456,3 +466,164 @@ class MultiVersionManifestTests(unittest.TestCase):
         self.assertIsNone(router_patch.load_host_registry(registry_path, manifest, optional_version=True))
         with self.assertRaises(router_patch.PatchError):
             router_patch.load_host_registry(registry_path, manifest)
+
+
+class PatchSeamTests(unittest.TestCase):
+    """The group, memory, and episode seams are mandatory in every version."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        root = Path(self.temporary.name)
+        self.host = root / "host-main.cjs"
+        self.backup = root / "backup.stock"
+        self.manifest = {
+            "grokBotVersion": "test",
+            "requiredAnchors": ["function createMockPromptExecutor(options2)"],
+            "anchorVerifiedHosts": router_patch.validate_anchor_policy(None),
+        }
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def test_every_seam_is_reported_and_fails_closed_when_missing(self):
+        self.host.write_text(STOCK_SOURCE)
+        self.manifest["stockHosts"] = [{"sha256": router_patch.sha256(self.host), "bytes": self.host.stat().st_size}]
+        self.assertEqual(router_patch.inspect_host(self.host, self.manifest)["patchAnchorCounts"], [1, 1, 1])
+        self.assertIn("PATCHANCHORS=1,1,1", router_patch.compatibility_report(self.host, self.manifest))
+        for index, seam in enumerate(router_patch.PATCH_ANCHORS):
+            with self.subTest(seam=seam):
+                source = STOCK_SOURCE.replace(seam, seam.replace("const ", "let ", 1))
+                self.host.write_text(source)
+                # Even an exact reviewed hash cannot bypass a missing seam.
+                self.manifest["stockHosts"] = [{"sha256": router_patch.sha256(self.host), "bytes": self.host.stat().st_size}]
+                report = router_patch.inspect_host(self.host, self.manifest)
+                self.assertEqual(report["patchAnchorCounts"][index], 0)
+                self.assertFalse(report["ok"])
+                self.assertEqual(report["patchDryRun"], "fail")
+                with self.assertRaisesRegex(router_patch.PatchError, "Host anchor count"):
+                    router_patch.install(self.host, self.backup, self.manifest, False, False)
+                self.assertEqual(self.host.read_text(), source)
+
+
+class UnreviewedVersionTests(unittest.TestCase):
+    """Structural trust exists only behind an explicit unreviewed-version opt-in."""
+
+    NEW_BUILD = STOCK_SOURCE + "// unreviewed newer Grok Bot build\n"
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        root = Path(self.temporary.name)
+        self.host = root / "host-main.cjs"
+        self.backup = root / "backup" / "host-main.cjs.stock"
+        self.manifest_path = root / "0.44.0.json"
+        reviewed = root / "reviewed.cjs"
+        reviewed.write_text(STOCK_SOURCE)
+        self.manifest_path.write_text(json.dumps({
+            "grokBotVersion": "0.44.0",
+            "stockHosts": [{"sha256": router_patch.sha256(reviewed), "bytes": reviewed.stat().st_size}],
+            "requiredAnchors": [
+                "function createMockPromptExecutor(options2)",
+                "createSession(onRequestId, sessionOptions)",
+                "const mockResponse = process.env.SAND_AGENT_MOCK_RESPONSE;",
+                "const mainSessionOptions = {",
+            ],
+            "anchorVerifiedHosts": {"enabled": False, "minBytes": 100, "maxBytes": 100000},
+        }))
+        self.manifest = router_patch.load_manifest(self.manifest_path)
+        self.host.write_text(self.NEW_BUILD)
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def run_cli(self, *extra):
+        return subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "patch" / "router_patch.py"), "--host", str(self.host),
+             "--backup", str(self.backup), "--manifest", str(self.manifest_path), "--json", *extra],
+            capture_output=True, text=True)
+
+    def test_structural_trust_requires_the_explicit_flag(self):
+        self.assertIsNone(router_patch.host_trust(self.host, self.manifest))
+        with self.assertRaisesRegex(router_patch.PatchError, "HOSTTRUST=NONE"):
+            router_patch.install(self.host, self.backup, self.manifest, False, False)
+        refused = self.run_cli()
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(self.host.read_text(), self.NEW_BUILD)
+        self.assertFalse(self.backup.exists())
+
+    def test_reviewed_older_and_between_versions_never_get_structural_trust(self):
+        for version in ("0.44.0", "0.36.0", "0.40.0", "0.29.9", "0.61", "latest", "0.61.0; true"):
+            with self.subTest(version=version):
+                with self.assertRaises(router_patch.PatchError):
+                    router_patch.require_unreviewed_version(version, self.manifest)
+                result = self.run_cli("--unreviewed-version", version)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Nothing was changed", result.stderr)
+                self.assertEqual(self.host.read_text(), self.NEW_BUILD)
+                self.assertFalse(self.backup.exists())
+
+    def test_newer_opt_in_installs_doctors_and_restores_exactly(self):
+        installed = self.run_cli("--unreviewed-version", "0.61.0")
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        result = json.loads(installed.stdout)
+        self.assertEqual(result["status"], "installed")
+        self.assertEqual(result["stockTrust"], router_patch.TRUST_UNREVIEWED)
+        self.assertEqual(result["unreviewedVersion"], "0.61.0")
+        self.assertEqual(result["templateManifestVersion"], "0.44.0")
+        self.assertEqual(self.host.read_text(), router_patch.patch_text(self.NEW_BUILD))
+        self.assertEqual(self.backup.read_text(), self.NEW_BUILD)
+
+        health = json.loads(self.run_cli("--doctor", "--unreviewed-version", "0.61.0").stdout)
+        self.assertTrue(health["ok"])
+        self.assertEqual(health["stockBackupTrust"], router_patch.TRUST_UNREVIEWED)
+        # Without the opt-in the same backup is not trusted, so repair and
+        # restore stay refused rather than silently widening trust.
+        self.assertFalse(router_patch.doctor(self.host, self.backup, self.manifest)["ok"])
+        with self.assertRaises(router_patch.PatchError):
+            router_patch.restore(self.host, self.backup, self.manifest, False, False)
+        self.assertEqual(
+            json.loads(self.run_cli("--unreviewed-version", "0.61.0").stdout)["status"], "already-installed")
+
+        restored = self.run_cli("--restore", "--unreviewed-version", "0.61.0")
+        self.assertEqual(restored.returncode, 0, restored.stderr)
+        self.assertEqual(self.host.read_bytes(), self.NEW_BUILD.encode())
+
+    def test_opt_in_still_refuses_hosts_that_fail_structural_checks(self):
+        variants = {
+            "foreign router": self.NEW_BUILD + "// opengrok adapter\n",
+            "legacy marker": self.NEW_BUILD + "// GROKBOT_MODEL_ROUTER_V44\n",
+            "duplicate anchor": self.NEW_BUILD + "// const mainSessionOptions = {\n",
+            "missing seam": self.NEW_BUILD.replace("const narrative = await", "const story = await"),
+            "outside band": self.NEW_BUILD + "//" + "x" * 100000 + "\n",
+        }
+        for label, source in variants.items():
+            with self.subTest(label=label):
+                self.host.write_text(source)
+                with self.assertRaisesRegex(router_patch.PatchError, "UNREVIEWEDVERSION=0.61.0"):
+                    router_patch.install(self.host, self.backup, self.manifest, False, False,
+                                         unreviewed_version="0.61.0")
+                self.assertEqual(self.host.read_text(), source)
+                self.assertFalse(self.backup.exists())
+        self.host.write_text(self.NEW_BUILD)
+        self.manifest["anchorVerifiedHosts"] = router_patch.validate_anchor_policy(None)
+        self.assertIsNone(router_patch.host_trust(self.host, self.manifest, unreviewed_version="0.61.0"))
+
+    def test_template_is_the_newest_manifest_whose_anchors_the_host_proves(self):
+        manifests = Path(self.temporary.name) / "manifests"
+        manifests.mkdir()
+        for version, mock in (("0.30.0", "process.env.SAND_AGENT_MOCK_RESPONSE"),
+                              ("0.36.0", "process.env.SAND_AGENT_MOCK_RESPONSE"),
+                              ("0.44.0", "options2.agentMockResponse")):
+            manifest = json.loads(self.manifest_path.read_text())
+            manifest["grokBotVersion"] = version
+            manifest["requiredAnchors"][2] = f"const mockResponse = {mock};"
+            (manifests / f"{version}.json").write_text(json.dumps(manifest))
+        self.assertEqual(router_patch.resolve_template_manifest(manifests, self.host)["grokBotVersion"], "0.36.0")
+        self.host.write_text(MultiVersionManifestTests.NEW_SOURCE + "// newer\n")
+        self.assertEqual(router_patch.resolve_template_manifest(manifests, self.host)["grokBotVersion"], "0.44.0")
+        self.host.write_text(STOCK_SOURCE.replace("createSession(onRequestId", "openSession(onRequestId"))
+        with self.assertRaisesRegex(router_patch.PatchError, "host probe"):
+            router_patch.resolve_template_manifest(manifests, self.host, self.backup)
+
+
+if __name__ == "__main__":
+    unittest.main()

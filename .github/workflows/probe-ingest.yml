@@ -6,10 +6,14 @@ name: Ingest host probe
 #   plus one reviewed anchor per line;
 # - version-watch.yml calls it with the sanitized probe that
 #   scripts/auto-probe.py produced on the self-hosted Bot-computer runner.
-# The workflow validates the probe (stock host, exact anchor counts, no router
-# marker), writes patch/manifests/<version>.json, and updates the installer
-# version lists. Merging still requires `npm test` and the full live fresh-Bot
-# gate in docs/FRESH-BOT-ACCEPTANCE.md recorded in docs/TEST-MATRIX.md.
+# The workflow validates the probe (stock host, exact anchor and patch-seam
+# counts, no router marker), writes patch/manifests/<version>.json with
+# structural trust disabled, adds the version to supported-apps.json, writes
+# the UNSIGNED compatibility/<version>-hosts.json, and updates the installer
+# version lists. CI never holds the registry signing key: a maintainer signs
+# locally with scripts/sign-host-registry.mjs. Merging still requires
+# `npm test` and the full live fresh-Bot gate in docs/FRESH-BOT-ACCEPTANCE.md
+# recorded in docs/TEST-MATRIX.md.
 on:
   workflow_dispatch:
     inputs:
@@ -77,7 +81,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m unittest tests/test_patch.py tests/test_version_tracking.py
-          bash -n scripts/install-macos.sh
+          node --check installer-windows/main.cjs
           bash -n remote/install.sh
       - name: Open a draft PR with the live-acceptance checklist
         env:
@@ -91,21 +95,24 @@ jobs:
           git config user.email "grokrouter-bot@users.noreply.github.com"
           git checkout -b "$branch"
           git add patch/manifests/"$NEW_VERSION".json \
+            compatibility/supported-apps.json \
+            compatibility/"$NEW_VERSION"-hosts.json \
             installer/GrokBotRouterInstaller.swift \
-            scripts/install-macos.sh remote/install.sh
+            installer-windows/main.cjs
           git commit -m "Draft support for Grok Bot $NEW_VERSION from a live host probe" \
-            -m "Automated scaffold from a reviewed host-probe report. DO NOT MERGE until npm test and docs/FRESH-BOT-ACCEPTANCE.md pass on a live $NEW_VERSION Bot computer and docs/TEST-MATRIX.md records the result."
+            -m "Automated scaffold from a reviewed host-probe report. DO NOT MERGE until a maintainer signs compatibility/$NEW_VERSION-hosts.json locally, npm test and docs/FRESH-BOT-ACCEPTANCE.md pass on a live $NEW_VERSION Bot computer, and docs/TEST-MATRIX.md records the result."
           git push --set-upstream origin "$branch"
           tracking=""
           if [[ -n "$TRACKING_ISSUE" ]]; then
             tracking="Tracking issue: #$TRACKING_ISSUE"
           fi
           gh pr create --draft --head "$branch" --title "Draft: support Grok Bot $NEW_VERSION" --body "$(cat <<EOF
-          Automated scaffold from a \`scripts/host-probe.py\` report of the untouched $NEW_VERSION host. The stock hash, byte count, and exact-once anchors come from that live host; no gate was loosened. $tracking
+          Automated scaffold from a \`scripts/host-probe.py\` report of the untouched $NEW_VERSION host. The stock hash, byte count, exact-once anchors, and patch seams come from that live host; no gate was loosened. $tracking
 
           ## Do-not-merge checklist
 
-          - [ ] \`npm test\` passes with this manifest.
+          - [ ] Maintainer signed the registry locally: \`node scripts/sign-host-registry.mjs compatibility/$NEW_VERSION-hosts.json\` (private key at \`~/.config/grokrouter/release/host-registry-private.pem\`, never in CI), then committed \`compatibility/$NEW_VERSION-hosts.json.sig\`.
+          - [ ] \`npm test\` passes with this manifest and the signed registry.
           - [ ] Full fresh-Bot procedure in \`docs/FRESH-BOT-ACCEPTANCE.md\` passes on Grok Bot $NEW_VERSION (install → restore → reinstall → new Bot → \`/router doctor\` → \`/provider\` → normal turn).
           - [ ] Result recorded in \`docs/TEST-MATRIX.md\` with the visible evidence and redacted audit receipt.
           - [ ] README supported-version badge/message updated only after the gate above passes.

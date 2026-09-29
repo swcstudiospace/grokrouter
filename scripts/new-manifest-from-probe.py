@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scaffold a new Grok Bot version manifest from a real host-probe report.
+"""Scaffold support for a new Grok Bot version from a real host-probe report.
 
 This is the second half of the version-tracking pipeline (the first half is
 scripts/check-grokbot-version.py spotting a new release). It NEVER guesses:
@@ -15,11 +15,15 @@ Usage (after pasting the probe output to /tmp/probe.json)::
     ...
 
 Every --anchor must have been passed to host-probe.py as --anchor too, so the
-report carries its exact count; each must appear exactly once. The script
-writes patch/manifests/<version>.json and updates the hardcoded supported
-version lists (Swift installer, install-macos.sh, remote/install.sh payload
-check). The result is a draft: it still needs `npm test` and the full live
-fresh-Bot gate in docs/FRESH-BOT-ACCEPTANCE.md before any support is claimed.
+report carries its exact count; each must appear exactly once, and so must
+every patch seam in the probe's patchAnchors. The script writes the exact
+per-version layout: patch/manifests/<version>.json (structural trust
+disabled), compatibility/<version>-hosts.json (UNSIGNED), the version in
+compatibility/supported-apps.json, and the installer version literals in the
+Swift and Windows installers. The result is a draft: a maintainer must sign
+the registry locally with scripts/sign-host-registry.mjs, and it still needs
+`npm test` and the full live fresh-Bot gate in docs/FRESH-BOT-ACCEPTANCE.md
+before any support is claimed.
 """
 from __future__ import annotations
 
@@ -40,6 +44,10 @@ def fail(message: str) -> int:
     return 1
 
 
+def version_key(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", version))
+
+
 def load_probe(path: Path) -> dict:
     text = path.read_text(encoding="utf-8")
     begin = text.find("GROKROUTER_HOST_PROBE_BEGIN")
@@ -52,12 +60,19 @@ def load_probe(path: Path) -> dict:
         raise ValueError(f"probe file is not JSON: {error}") from error
 
 
-def replace_once(path: Path, pattern: str, replacement: str, label: str) -> None:
-    text = path.read_text(encoding="utf-8")
+def load_patcher(root: Path):
+    spec = importlib.util.spec_from_file_location("router_patch", root / "patch" / "router_patch.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def replace_once(text: str, pattern: str, replacement: str, label: str) -> str:
     matches = re.findall(pattern, text, flags=re.MULTILINE)
     if len(matches) != 1:
-        raise ValueError(f"{label}: expected 1 match, found {len(matches)} in {path}")
-    path.write_text(text.replace(matches[0], replacement, 1), encoding="utf-8")
+        raise ValueError(f"{label}: expected 1 match, found {len(matches)}")
+    return text.replace(matches[0], replacement, 1)
 
 
 def main() -> int:
@@ -110,11 +125,24 @@ def main() -> int:
     if markers:
         return fail(f"host already carries a router marker: {markers}; it is not stock")
 
+    try:
+        patcher = load_patcher(root)
+    except Exception as error:
+        return fail(f"cannot load patch/router_patch.py: {error}")
+    # The patch hooks these seams in every version; the live probe must prove
+    # them, not only the manifest anchors.
+    seams = probe.get("patchAnchors")
+    if not isinstance(seams, dict):
+        return fail("probe lacks patchAnchors; re-run the current host-probe.py")
+    for anchor in patcher.PATCH_ANCHORS:
+        if seams.get(anchor) != 1:
+            return fail(f"patch seam {anchor!r} appears {seams.get(anchor, 0)} times, need exactly once")
+
     manifests_dir = root / "patch" / "manifests"
     existing = sorted(manifests_dir.glob("*.json"))
     if not existing:
         return fail(f"no manifests in {manifests_dir}")
-    newest = max(existing, key=lambda p: tuple(int(n) for n in re.findall(r"\d+", p.stem)))
+    newest = max(existing, key=lambda p: version_key(p.stem))
     template = json.loads(newest.read_text(encoding="utf-8"))
     if not isinstance(template.get("anchorVerifiedHosts"), dict):
         return fail(f"template manifest {newest} has no anchorVerifiedHosts policy")
@@ -126,66 +154,71 @@ def main() -> int:
                     f"[{policy['minBytes']}, {policy['maxBytes']}]; review the policy consciously")
 
     target = manifests_dir / f"{version}.json"
-    if target.exists():
-        return fail(f"{target} already exists; support for {version} is already scaffolded")
+    registry_target = root / "compatibility" / f"{version}-hosts.json"
+    supported_path = root / "compatibility" / "supported-apps.json"
+    if target.exists() or registry_target.exists():
+        return fail(f"support for {version} is already scaffolded ({target.name} or {registry_target.name} exists)")
+    try:
+        supported = json.loads(supported_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        return fail(f"cannot read {supported_path}: {error}")
+    listed = supported.get("versions") if isinstance(supported, dict) else None
+    if not isinstance(listed, list) or version in listed:
+        return fail(f"{supported_path} has no versions list or already lists {version}")
+    versions = sorted({*listed, version}, key=version_key)
+    stock_hosts = [{"sha256": sha, "bytes": size}]
     manifest = {
         "grokBotVersion": version,
         "hostPath": template.get("hostPath", "/home/box/sand-host/host-main.cjs"),
-        "stockHosts": [{"sha256": sha, "bytes": size}],
+        "stockHosts": stock_hosts,
         "requiredAnchors": anchors,
         "routerMarker": template.get("routerMarker", "GROKBOT_MODEL_ROUTER_V45"),
-        "anchorVerifiedHosts": policy,
+        # A reviewed version trusts its exact stock hashes only; the band
+        # bounds structural checks for a later unreviewed version.
+        "anchorVerifiedHosts": {"enabled": False, "minBytes": policy["minBytes"], "maxBytes": policy["maxBytes"]},
     }
-    target.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    registry = {"schemaVersion": 1, "grokBotVersion": version, "stockHosts": stock_hosts}
 
-    # The written manifest must satisfy the same loader gates as shipped ones.
-    spec = importlib.util.spec_from_file_location(
-        "router_patch", root / "patch" / "router_patch.py")
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
+    # Prepare every gate edit before writing, so a missing literal changes nothing.
+    swift_path = root / "installer" / "GrokBotRouterInstaller.swift"
+    windows_path = root / "installer-windows" / "main.cjs"
+    literal = json.dumps(versions)
     try:
-        module.load_manifest(target)
-    except Exception as error:
-        target.unlink()
-        return fail(f"generated manifest fails loader gates, removed: {error}")
-
-    versions = sorted(
-        [json.loads(p.read_text())["grokBotVersion"] for p in manifests_dir.glob("*.json")])
-    try:
-        swift = root / "installer" / "GrokBotRouterInstaller.swift"
-        swift_list = "[" + ", ".join(f'"{v}"' for v in versions) + "]"
-        replace_once(swift,
-                     r"private let supportedGrokVersions = \[[^\]]*\]",
-                     f"private let supportedGrokVersions = {swift_list}",
-                     "supportedGrokVersions")
-        replace_once(swift,
-                     r"GROK BOT [0-9.]+(?: · [0-9.]+)*",
-                     "GROK BOT " + " · ".join(versions),
-                     "installer eyebrow")
-        install_macos = root / "scripts" / "install-macos.sh"
-        replace_once(install_macos,
-                     r"install Grok Bot [0-9.]+(?: or [0-9.]+)* in Applications first",
-                     "install Grok Bot " + " or ".join(versions) + " in Applications first",
-                     "install-macos.sh gate message")
-        remote_install = root / "remote" / "install.sh"
-        remote_text = remote_install.read_text(encoding="utf-8")
-        block_pattern = re.compile(
-            r'(  "\$PAYLOAD_ROOT/patch/manifests/[0-9.]+\.json" \\\n)+')
-        block_match = block_pattern.search(remote_text)
-        if not block_match:
-            raise ValueError("remote/install.sh manifest block not found")
-        block = "".join(f'  "$PAYLOAD_ROOT/patch/manifests/{v}.json" \\\n' for v in versions)
-        remote_install.write_text(
-            remote_text[:block_match.start()] + block + remote_text[block_match.end():],
-            encoding="utf-8")
+        swift = replace_once(swift_path.read_text(encoding="utf-8"),
+                             r"private let supportedGrokVersions = \[[^\]\n]*\]",
+                             f"private let supportedGrokVersions = {literal}",
+                             "Swift supportedGrokVersions")
+        swift = replace_once(swift,
+                             r"GROK BOT [0-9.]+(?: · [0-9.]+)*",
+                             "GROK BOT " + " · ".join(versions),
+                             "Swift installer eyebrow")
+        windows = replace_once(windows_path.read_text(encoding="utf-8"),
+                               r"const SUPPORTED_GROK_VERSIONS = \[[^\]\n]*\]",
+                               f"const SUPPORTED_GROK_VERSIONS = {literal}",
+                               "Windows SUPPORTED_GROK_VERSIONS")
     except (OSError, ValueError) as error:
         return fail(str(error))
 
+    target.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    # The written manifest must satisfy the same loader gates as shipped ones.
+    try:
+        patcher.load_manifest(target)
+    except Exception as error:
+        target.unlink()
+        return fail(f"generated manifest fails loader gates, removed: {error}")
+    registry_target.write_text(json.dumps(registry, indent=2) + "\n", encoding="utf-8")
+    supported["versions"] = versions
+    supported_path.write_text(json.dumps(supported, indent=2) + "\n", encoding="utf-8")
+    swift_path.write_text(swift, encoding="utf-8")
+    windows_path.write_text(windows, encoding="utf-8")
+
     print(f"Drafted support for Grok Bot {version}:")
     print(f"  manifest: {target.relative_to(root)} (sha256 {sha[:12]}..., {size} bytes)")
+    print(f"  registry: {registry_target.relative_to(root)} (UNSIGNED)")
     print(f"  supported versions now: {', '.join(versions)}")
-    print("Next: run `npm test`, then the full live gate in docs/FRESH-BOT-ACCEPTANCE.md")
+    print("Next: a maintainer signs the registry locally (the private key never leaves")
+    print(f"  ~/.config/grokrouter/release): node scripts/sign-host-registry.mjs {registry_target.relative_to(root)}")
+    print("Then run `npm test` and the full live gate in docs/FRESH-BOT-ACCEPTANCE.md")
     print("before claiming support in docs/TEST-MATRIX.md.")
     return 0
 
