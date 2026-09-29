@@ -106,6 +106,7 @@
     }
 
     $temporary = $null
+    $installLock = $null
     $previousAppOnly = $env:ROUTER_BUILD_APP_ONLY
     $exitCode = 0
     try {
@@ -146,6 +147,15 @@
             -not (Test-Path -LiteralPath (Join-Path $installDir 'GrokRouter.exe') -PathType Leaf) -and
             (Get-ChildItem -LiteralPath $installDir -Force | Select-Object -First 1)) {
             Stop-Install "$installDir already exists and is not a GrokRouter install; choose an empty or new folder"
+        }
+        New-Item -ItemType Directory -Force -Path $installParent | Out-Null
+        # One installer per folder at a time, held from before the build to the
+        # end, so a concurrent run can never remove this run's staging copy or backup.
+        try {
+            $installLock = New-Object IO.FileStream((Join-Path $installParent "$installLeaf.install.lock"),
+                [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None, 1, [IO.FileOptions]::DeleteOnClose)
+        } catch {
+            Stop-Install "another GrokRouter installation into $installDir is already running"
         }
 
         $sourceRoot = $null
@@ -194,8 +204,6 @@
         if (-not (Test-Path -LiteralPath (Join-Path $builtApp 'GrokRouter.exe') -PathType Leaf)) {
             Stop-Install 'the build did not produce GrokRouter.exe'
         }
-
-        New-Item -ItemType Directory -Force -Path $installParent | Out-Null
 
         $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
         $staging = Join-Path $installParent "$installLeaf.installing-$stamp"
@@ -253,6 +261,7 @@
         $exitCode = 1
     } finally {
         $env:ROUTER_BUILD_APP_ONLY = $previousAppOnly
+        if ($installLock) { $installLock.Dispose() }
         if ($temporary -and (Test-Path -LiteralPath $temporary)) {
             Remove-Item -LiteralPath $temporary -Recurse -Force -ErrorAction SilentlyContinue
         }
