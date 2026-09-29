@@ -95,6 +95,12 @@ if [[ -n "${ROUTER_WINDOWS_SIGN_PFX:-}" ]]; then
       -ExecutionPolicy Bypass \
       -File "$(cygpath -w "$PROJECT_ROOT/scripts/sign-windows.ps1")"
 fi
+# The source installer only needs the unpacked app; archiving it would add
+# minutes of Compress-Archive time for nothing.
+if [[ "${ROUTER_BUILD_APP_ONLY:-0}" == "1" ]]; then
+  printf '%s\n' "$APP_ROOT"
+  exit 0
+fi
 ZIP_PATH="$BUILD_ROOT/grokrouter-${VERSION}-windows-${ARCH}.zip"
 rm -f "$ZIP_PATH" "$ZIP_PATH.sha256"
 if command -v 7z >/dev/null 2>&1; then

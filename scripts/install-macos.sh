@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPOSITORY="promptadvisers/grokrouter"
-SOURCE_REF="source-v0.1.0-beta.47"
+REPOSITORY="swcstudiospace/grokrouter"
+SOURCE_REF="source-v0.1.0-beta.48"
 SOURCE_ROOT=""
 TEMP_SOURCE=""
 
@@ -55,7 +55,7 @@ if ! /usr/bin/xcode-select -p >/dev/null 2>&1 || ! command -v swiftc >/dev/null 
 fi
 
 [[ -d "/Applications/Grok Bot.app" ]] \
-  || fail "install a supported official Grok Bot app in Applications first"
+  || fail "install the official Grok Bot app in Applications first"
 
 printf 'Building GrokRouter locally from the version-pinned source...\n'
 ROUTER_BUILD_APP_ONLY=1 /bin/bash "$SOURCE_ROOT/scripts/build-macos-app.sh" >/dev/null

@@ -1,15 +1,18 @@
 name: Tag source release
 
-# Creates the annotated source tag that the README's pinned Terminal command
-# downloads. Run it from the Actions tab after the version bump has merged,
-# or opt in from a release commit by putting [tag-release] in the message of
-# the commit that lands on main. It refuses to tag a commit whose version
-# fields disagree with the requested version.
+# Creates the annotated source tag that the README's pinned macOS Terminal and
+# Windows PowerShell commands download. Run it from the Actions tab after the
+# version bump has merged, or opt in from a release commit by putting
+# [tag-release] in the message of the commit that lands on main. It refuses to
+# tag a commit whose version fields, installer source refs, or README commands
+# disagree with the requested version. Only the maintained repository tags:
+# the pinned commands download from swcstudiospace/grokrouter, so a tag pushed
+# anywhere else would publish nothing users can reach.
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version exactly as in package.json (for example 0.1.0-beta.46)"
+        description: "Release version exactly as in package.json (for example 0.1.0-beta.48)"
         required: true
         type: string
   push:
@@ -24,13 +27,13 @@ concurrency:
 
 jobs:
   verify:
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[tag-release]'))
+    if: github.repository == 'swcstudiospace/grokrouter' && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[tag-release]'))
     uses: ./.github/workflows/ci.yml
   tag:
     needs: verify
     permissions:
       contents: write
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[tag-release]')
+    if: github.repository == 'swcstudiospace/grokrouter' && (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[tag-release]'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

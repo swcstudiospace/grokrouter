@@ -78,3 +78,49 @@ jobs:
             build/grokrouter-*-windows-arm64-setup.exe
             build/grokrouter-*-windows-arm64-setup.exe.sha256
           if-no-files-found: error
+      - name: Parse the Windows source installer
+        shell: powershell
+        run: |
+          foreach ($shell in 'powershell', 'pwsh') {
+            & $shell -NoProfile -Command {
+              $tokens = $null; $errors = $null
+              [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'scripts/install-windows.ps1').Path, [ref]$tokens, [ref]$errors)
+              foreach ($problem in $errors) { Write-Host "install-windows.ps1:$($problem.Extent.StartLineNumber): $($problem.Message)" }
+              exit $errors.Count
+            }
+            if ($LASTEXITCODE -ne 0) { throw "$shell could not parse scripts/install-windows.ps1" }
+          }
+      # Runs after the artifact upload because it rebuilds build/windows. No Grok
+      # Bot is needed: the installer only builds, places, and links the app.
+      - name: Install twice from the checkout with the Windows source installer
+        shell: powershell
+        env:
+          GROKROUTER_NO_OPEN: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:GROKROUTER_INSTALL_DIR = Join-Path $env:RUNNER_TEMP 'GrokRouter'
+          $stale = Join-Path $env:RUNNER_TEMP 'GrokRouter.previous-19990101-000000'
+          # A non-GrokRouter folder that merely shares the prefix must survive pruning.
+          $foreign = Join-Path $env:RUNNER_TEMP 'GrokRouter.previous-user-notes'
+          foreach ($pass in 1, 2) {
+            if ($pass -eq 2) {
+              New-Item -ItemType Directory -Path $stale, $foreign | Out-Null
+              Set-Content -LiteralPath (Join-Path $stale 'GrokRouter.exe') -Value 'stale'
+            }
+            powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-windows.ps1
+            if ($LASTEXITCODE -ne 0) { throw "install pass $pass failed" }
+            if (-not (Test-Path -LiteralPath (Join-Path $env:GROKROUTER_INSTALL_DIR 'GrokRouter.exe') -PathType Leaf)) { throw "install pass $pass did not place GrokRouter.exe" }
+          }
+          if (-not (Test-Path -LiteralPath $foreign)) { throw 'pruning removed a folder that was not a GrokRouter install' }
+          $backups = @(Get-ChildItem -LiteralPath $env:RUNNER_TEMP -Directory -Filter 'GrokRouter.previous-*' | Where-Object FullName -ne $foreign)
+          if ($backups.Count -ne 1 -or $backups[0].FullName -eq $stale) { throw "expected only the newest previous install, found: $($backups.Name -join ', ')" }
+          if (-not (Test-Path -LiteralPath (Join-Path $backups[0].FullName 'GrokRouter.exe') -PathType Leaf)) { throw 'the previous install was not preserved' }
+          if (@(Get-ChildItem -LiteralPath $env:RUNNER_TEMP -Directory -Filter 'GrokRouter.installing-*').Count -ne 0) { throw 'a staging directory was left behind' }
+          if (-not (Test-Path -LiteralPath (Join-Path ([Environment]::GetFolderPath('Programs')) 'GrokRouter.lnk'))) { throw 'the Start menu shortcut is missing' }
+          $occupied = Join-Path $env:RUNNER_TEMP 'NotGrokRouter'
+          New-Item -ItemType Directory -Path $occupied | Out-Null
+          Set-Content -LiteralPath (Join-Path $occupied 'keep.txt') -Value 'user data'
+          $env:GROKROUTER_INSTALL_DIR = $occupied
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-windows.ps1
+          if ($LASTEXITCODE -eq 0) { throw 'the installer replaced a folder that was not a GrokRouter install' }
+          if (-not (Test-Path -LiteralPath (Join-Path $occupied 'keep.txt'))) { throw 'the installer touched a folder that was not a GrokRouter install' }
