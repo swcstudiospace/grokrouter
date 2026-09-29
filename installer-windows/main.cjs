@@ -9,8 +9,9 @@ const WebSocket = require("ws");
 const { createWorker } = require("tesseract.js");
 
 const execFileAsync = promisify(execFile);
-const SUPPORTED_GROK_VERSIONS = Object.freeze(["0.30.0", "0.44.0"]);
-const SUPPORTED_GROK_VERSION = SUPPORTED_GROK_VERSIONS.join(" or ");
+const SUPPORTED_GROK_VERSIONS = ["0.30.0", "0.36.0", "0.44.0"];
+const SUPPORTED_GROK_VERSION = SUPPORTED_GROK_VERSIONS.join(", ");
+let detectedGrokVersion = "0.30.0";
 const CDP_PORT = 19222;
 const CODEX_MODELS = new Set(["gpt-6-astra", "gpt-6-astra-pro", "gpt-5.6-sol", "gpt-5.6-sol-pro", "gpt-5.6-terra", "gpt-5.6-luna"]);
 const OPENROUTER_MODELS = new Set(["anthropic/claude-sonnet-5", "anthropic/claude-opus-5", "anthropic/claude-fable-5.1", "anthropic/claude-haiku-4.5", "openai/gpt-6-astra", "openai/gpt-5.6-luna", "x-ai/grok-4.6", "google/gemini-3.8-flash", "moonshotai/kimi-k3", "deepseek/deepseek-v4-pro", "openrouter/free"]);
@@ -167,12 +168,12 @@ class CDPClient {
     this.pendingNested.clear();
   }
 
-  responsePromise(map, key, timeoutMessage) {
+  responsePromise(map, key, timeoutMessage, timeoutMilliseconds = 30_000) {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         map.delete(key);
         reject(new Error(timeoutMessage));
-      }, 30_000);
+      }, timeoutMilliseconds);
       map.set(key, { resolve, reject, timer });
     });
   }
@@ -182,22 +183,23 @@ class CDPClient {
     return message.result || {};
   }
 
-  async call(method, params = {}, sessionID = null) {
+  async call(method, params = {}, sessionID = null, timeoutMilliseconds = 30_000) {
     await this.ready;
-    if (sessionID) return this.callNested(method, params, sessionID);
+    if (sessionID) return this.callNested(method, params, sessionID, timeoutMilliseconds);
     const id = this.nextID++;
-    const response = this.responsePromise(this.pending, id, `DevTools timed out while running ${method}.`);
+    const response = this.responsePromise(this.pending, id, `DevTools timed out while running ${method}.`, timeoutMilliseconds);
     this.socket.send(JSON.stringify({ id, method, params }));
     return this.result(await response);
   }
 
-  async callNested(method, params, sessionID) {
+  async callNested(method, params, sessionID, timeoutMilliseconds = 30_000) {
     const nestedID = this.nextID++;
     const outerID = this.nextID++;
     const nestedResponse = this.responsePromise(
       this.pendingNested,
       `${sessionID}:${nestedID}`,
       `Grok Bot's computer timed out while running ${method}.`,
+      timeoutMilliseconds,
     );
     const outerResponse = this.responsePromise(this.pending, outerID, "DevTools did not accept the nested command.");
     this.socket.send(JSON.stringify({
@@ -250,9 +252,11 @@ async function locateAndValidateGrok() {
   }
   if (metadata.Status !== "Valid") throw new Error("The installed Grok Bot executable does not have a valid Windows signature. Nothing was changed.");
   const version = String(metadata.Version || "").trim();
-  if (!SUPPORTED_GROK_VERSIONS.some((supported) => version === supported || version === `${supported}.0`)) {
+  const matched = SUPPORTED_GROK_VERSIONS.find((supported) => version === supported || version === `${supported}.0`);
+  if (!matched) {
     throw new Error(`Grok Bot ${version || "unknown"} is not supported. This beta is pinned to ${SUPPORTED_GROK_VERSION} and will not patch an unknown build.`);
   }
+  detectedGrokVersion = matched;
   return executable;
 }
 
@@ -280,7 +284,7 @@ async function browserWebSocketURL() {
 }
 
 async function relaunchWithDiagnostics(executable) {
-  log(`Verified signed Grok Bot ${SUPPORTED_GROK_VERSION}. Restarting with a local diagnostic port…`);
+  log(`Verified signed Grok Bot ${detectedGrokVersion}. Restarting with a local diagnostic port…`);
   await stopGrok();
   if (await browserWebSocketURL().then(() => true).catch(() => false)) {
     throw new Error(`Local port ${CDP_PORT} is already in use. Close the application using it and retry.`);
@@ -325,12 +329,12 @@ async function mainPageSession(client) {
   return attach(client, page.id);
 }
 
-async function evaluate(client, sessionID, expression) {
+async function evaluate(client, sessionID, expression, timeoutMilliseconds = 30_000) {
   const response = await client.call("Runtime.evaluate", {
     expression,
     awaitPromise: true,
     returnByValue: true,
-  }, sessionID);
+  }, sessionID, timeoutMilliseconds);
   if (response.exceptionDetails) throw new Error("Grok Bot rejected a local installer command.");
   return response;
 }
@@ -623,7 +627,8 @@ function nativeWorkflowExpression(operation) {
 }
 
 async function updateNativeWorkflows(client, pageSession, operation = "sync") {
-  const response = await evaluate(client, pageSession, nativeWorkflowExpression(operation));
+  // Allow the 45-second workflow-library load and bounded registration retries.
+  const response = await evaluate(client, pageSession, nativeWorkflowExpression(operation), 240_000);
   const encoded = response.result?.value;
   if (typeof encoded !== "string") throw new Error("Grok Bot did not return a native command registration receipt.");
   const stats = JSON.parse(encoded);
@@ -663,7 +668,7 @@ function validatedInstallOptions(raw) {
 
 async function installRouter(executable, rawOptions) {
   const options = validatedInstallOptions(rawOptions);
-  setStatus(true, `Step 1 of 6 · Grok Bot ${SUPPORTED_GROK_VERSION} is supported.`);
+  setStatus(true, `Step 1 of 6 · Grok Bot ${detectedGrokVersion} is supported.`);
   await relaunchWithDiagnostics(executable);
   const client = new CDPClient(await browserWebSocketURL());
   try {
@@ -699,7 +704,7 @@ async function installRouter(executable, rawOptions) {
       "rm -rf /tmp/grokbot-router-installer/payload",
       "mkdir -p /tmp/grokbot-router-installer/payload",
       "tar -xzf /tmp/grokbot-router-installer/payload.tgz -C /tmp/grokbot-router-installer/payload --strip-components=1",
-      `if ROUTER_INSTALL_ATTEMPT=${installAttempt} bash /tmp/grokbot-router-installer/payload/remote/install.sh --provider ${options.defaultProvider} --providers ${options.providers.join(",")} --codex-model ${options.codexModel} --openrouter-model ${options.openRouterModel} --anthropic-model ${options.anthropicModel} --xai-model ${options.xaiModel}; then clear; printf %s ${installPayload} | base64 -d; else code=$?; printf %s ${failurePayload} | base64 -d; echo $code; fi`,
+      `if ROUTER_INSTALL_ATTEMPT=${installAttempt} bash /tmp/grokbot-router-installer/payload/remote/install.sh --no-restart --grok-version ${detectedGrokVersion} --provider ${options.defaultProvider} --providers ${options.providers.join(",")} --codex-model ${options.codexModel} --openrouter-model ${options.openRouterModel} --anthropic-model ${options.anthropicModel} --xai-model ${options.xaiModel}; then clear; printf %s ${installPayload} | base64 -d; else code=$?; printf %s ${failurePayload} | base64 -d; echo $code; fi`,
     );
     log("Transferring a SHA-256-verified payload into the Bot computer…");
     const installVNC = await typeRemoteCommandsResilient(commands, client, pageSession);
@@ -708,6 +713,7 @@ async function installRouter(executable, rawOptions) {
     log("The Bot computer reported a successful install.");
     log("Registering native slash commands through Grok Bot's workflow service…");
     await updateNativeWorkflows(client, pageSession);
+    await restartInstalledHost(client, pageSession);
     await evaluate(client, pageSession, "window.desktop.forceGatewayReconnect().then(()=>true)").catch(() => {});
     if (options.defaultProvider === "openrouter") return "Installed with OpenRouter selected. Send /router doctor in Grok Bot.";
     if (options.defaultProvider === "anthropic") return "Installed. Click Anthropic sign-in, then send /router doctor in Grok Bot.";
@@ -726,9 +732,15 @@ const REMOTE_ACTIONS = Object.freeze({
   authAnthropic: { command: "/home/box/.local/bin/grokbot-router auth anthropic", sentinel: "Anthropic", message: "Anthropic sign-in is visible in the Bot terminal. Complete the displayed sign-in." },
   authXai: { command: "/home/box/.local/bin/grokbot-router auth xai", sentinel: "xAI Grok sign-in", message: "xAI sign-in is visible in the Bot terminal. Open the shown link on any device and confirm the code." },
   doctor: { command: "/home/box/.local/bin/grokbot-router doctor", sentinel: "GROKBOT_ROUTER_DOCTOR_DONE", message: "Router Doctor completed in the Bot terminal." },
-  repair: { command: "/home/box/.local/bin/grokbot-router repair", sentinel: "GROKBOT_ROUTER_REPAIR_OK", message: "Router repaired. Automatic repair is enabled. Send /provider in Grok Bot." },
+  repair: { command: "/home/box/.local/bin/grokbot-router repair --no-restart", sentinel: "GROKBOT_ROUTER_REPAIR_OK", message: "Router repaired. Automatic repair is enabled. Send /provider in Grok Bot." },
   uninstall: { command: "/home/box/.local/bin/grokbot-router uninstall", sentinel: "GROKBOT_ROUTER_UNINSTALL_OK", message: "Restore command sent. Grok Bot will reconnect to its stock host." },
 });
+
+async function restartInstalledHost(client, pageSession) {
+  log("Native commands are registered. Restarting the Grok host…");
+  const vnc = await typeRemoteCommandsResilient(["/home/box/.local/bin/grokbot-router restart"], client, pageSession);
+  await waitForSentinel("GROKBOT_ROUTER_RESTART_REQUESTED", client, vnc, 45);
+}
 
 async function sendRemoteAction(executable, action) {
   if (!(await browserWebSocketURL().then(() => true).catch(() => false))) await relaunchWithDiagnostics(executable);
@@ -742,7 +754,11 @@ async function sendRemoteAction(executable, action) {
     }
     const vnc = await typeRemoteCommandsResilient([descriptor.command], client, pageSession);
     await waitForSentinel(descriptor.sentinel, client, vnc, 45);
-    if (action === "repair") await updateNativeWorkflows(client, pageSession);
+    if (action === "repair") {
+      await updateNativeWorkflows(client, pageSession);
+      await restartInstalledHost(client, pageSession);
+      await evaluate(client, pageSession, "window.desktop.forceGatewayReconnect().then(()=>true)").catch(() => {});
+    }
     return descriptor.message;
   } finally {
     client.close();
