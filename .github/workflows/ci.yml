@@ -124,3 +124,5 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-windows.ps1
           if ($LASTEXITCODE -eq 0) { throw 'the installer replaced a folder that was not a GrokRouter install' }
           if (-not (Test-Path -LiteralPath (Join-Path $occupied 'keep.txt'))) { throw 'the installer touched a folder that was not a GrokRouter install' }
+          # The refusal above is the expected outcome; the step wrapper would otherwise exit with its code.
+          $global:LASTEXITCODE = 0
