@@ -7,13 +7,13 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting this. Never paste an OpenRouter key, Codex device code, password, conversation, private Bot file, or Grok host source. GrokRouter's safe report contains the complete non-secret fingerprint we need.
+        Thanks for reporting this to the maintained GrokRouter repository, swcstudiospace/grokrouter. Never paste an OpenRouter key, Codex device code, password, conversation, private Bot file, or Grok host source. GrokRouter's safe report contains the complete non-secret fingerprint we need.
 
   - type: dropdown
     id: platform
     attributes:
       label: Platform
-      description: Choose the physical computer running the Grok Bot desktop app. Windows builds are source previews and have not completed native live acceptance; macOS Apple silicon is the supported beginner path. The Bot computer may separately report x86_64, which is normal cloud architecture.
+      description: Choose the physical computer running the Grok Bot desktop app. Windows builds, including the Windows source installer, have not completed native live acceptance; macOS Apple silicon is the supported beginner path. The Bot computer may separately report x86_64, which is normal cloud architecture.
       options:
         - Apple-silicon Mac
         - Windows x64 preview
@@ -26,8 +26,17 @@ body:
     id: grokrouter_version
     attributes:
       label: GrokRouter version
-      description: Enter the Installer line from Copy safe diagnostics, such as 0.1.0-beta.46. Do not enter Grok Bot 0.30.0 here.
-      placeholder: 0.1.0-beta.46
+      description: Enter the Installer line from Copy safe diagnostics, such as 0.1.0-beta.48. Do not enter the Grok Bot desktop version here.
+      placeholder: 0.1.0-beta.48
+    validations:
+      required: true
+
+  - type: input
+    id: grok_bot_version
+    attributes:
+      label: Grok Bot desktop version
+      description: Enter the official desktop app version separately from the GrokRouter version. State whether Grok Bot updated after installation or before this failure.
+      placeholder: "0.44.0; updated to 0.61.0 before Repair"
     validations:
       required: true
 
@@ -35,13 +44,27 @@ body:
     id: install_source
     attributes:
       label: Installation source
-      description: Choose the exact package or command you ran. The pinned Terminal command is macOS-only. Old forks and downloaded copies can contain an earlier router even when this README is current.
+      description: Choose the exact package or command you ran. Copies from the unmaintained promptadvisers/grokrouter upstream, other forks, and old downloads can contain an earlier router even when this README is current.
       options:
-        - Pinned beta.46 Mac Terminal command from the official README
+        - Pinned Mac Terminal command from the official README
+        - Pinned Windows PowerShell command from the official README
+        - Install GrokRouter.cmd or install-windows.ps1 from an official source ZIP or clone
         - Windows x64 CI preview artifact
         - Windows Arm64 CI preview artifact
         - ZIP downloaded from the official repository
-        - Fork, clone, old ZIP, or another source
+        - promptadvisers/grokrouter, another fork, an old ZIP, or another source
+        - I do not know
+    validations:
+      required: true
+
+  - type: dropdown
+    id: unreviewed_version
+    attributes:
+      label: Was "Allow unreviewed Grok Bot version (experimental)" turned on?
+      description: This default-off option lets GrokRouter try a Grok Bot desktop version newer than every reviewed one. Safe diagnostics then show HOSTTRUST=UNREVIEWED-ANCHOR-VERIFIED instead of an exact reviewed fingerprint.
+      options:
+        - "No"
+        - "Yes"
         - I do not know
     validations:
       required: true
@@ -89,7 +112,7 @@ body:
     id: safe_diagnostics
     attributes:
       label: Safe diagnostics
-      description: In the GrokRouter desktop app, click Copy safe diagnostics and paste the entire report once. Beta.46 includes the non-secret host fingerprint for a genuinely new stock variant. Windows reports from source after beta.46 also preserve the last installer phase and fingerprint lines.
+      description: In the GrokRouter desktop app, click Copy safe diagnostics and paste the entire report once. Include the host fingerprint and last installer phase. An unsupported app version and an unknown cloud-host hash are different failures.
       render: text
     validations:
       required: true

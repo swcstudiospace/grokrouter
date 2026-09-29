@@ -9,6 +9,7 @@ const elements = {
   anthropicModel: document.querySelector("#anthropicModel"),
   xaiModel: document.querySelector("#xaiModel"),
   openRouterKey: document.querySelector("#openRouterKey"),
+  allowUnreviewed: document.querySelector("#allowUnreviewedVersion"),
   install: document.querySelector("#install"),
   status: document.querySelector("#status"),
   spinner: document.querySelector("#spinner"),
@@ -50,6 +51,7 @@ function setBusy(value, status) {
   elements.anthropic.disabled = value;
   elements.xai.disabled = value;
   elements.defaultProvider.disabled = value;
+  elements.allowUnreviewed.disabled = value;
   buttons.forEach((button) => { button.disabled = value; });
   syncProviders();
 }
@@ -68,7 +70,8 @@ async function run(action, payload = {}) {
   elements.recovery.classList.add("hidden");
   setBusy(true, action === "install" ? "Checking Grok Bot…" : "Connecting to the Bot computer…");
   try {
-    const result = await window.grokRouter.run(action, payload);
+    // Every action re-validates the Grok Bot app, so each carries the opt-in.
+    const result = await window.grokRouter.run(action, { ...payload, allowUnreviewedVersion: elements.allowUnreviewed.checked });
     if (!result?.ok) {
       if (busy) setBusy(false, `Stopped: ${result?.error || "The installer request failed."}`);
       elements.retryInstall.classList.toggle("hidden", action !== "install");
@@ -102,10 +105,10 @@ elements.install.addEventListener("click", () => {
   const payload = {
     defaultProvider: elements.defaultProvider.value,
     providers,
-    codexModel: elements.codexModel.value,
-    openRouterModel: elements.openRouterModel.value,
-    anthropicModel: elements.anthropicModel.value,
-    xaiModel: elements.xaiModel.value,
+    codexModel: elements.codexModel.value.trim(),
+    openRouterModel: elements.openRouterModel.value.trim(),
+    anthropicModel: elements.anthropicModel.value.trim(),
+    xaiModel: elements.xaiModel.value.trim(),
     openRouterKey: key,
   };
   elements.openRouterKey.value = "";

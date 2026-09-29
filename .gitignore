@@ -12,6 +12,7 @@ runtime/channel-control-latch.json
 *.zip
 handoff/
 __pycache__/
+runtime/channel-control-latch.json.*
 runtime/openrouter-catalog.json
 runtime/xai-oauth.json
 runtime/model-catalog.*.json

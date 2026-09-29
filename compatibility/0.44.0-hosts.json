@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "grokBotVersion": "0.44.0",
+  "stockHosts": [
+    {
+      "sha256": "b46054757e21bc0b9440f703f25b1bad9fd5e7ed5943801c4f59bb063016fe08",
+      "bytes": 28264284
+    }
+  ]
+}

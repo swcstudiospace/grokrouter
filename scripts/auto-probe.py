@@ -13,8 +13,9 @@ automatic form of the manual "run host-probe.py, review anchors, ingest" step:
      really moved to a new build),
    - the probe's version hints name the requested version,
    - the executor, session, and session-options anchors plus exactly one known
-     mock-response dialect each appear exactly once (only anchors the patcher
-     already hooks; anchors are never invented or loosened),
+     mock-response dialect each appear exactly once, and so do the patch's
+     group-dispatch, memory-extraction, and episode-summary seams (only
+     anchors the patcher already hooks; anchors are never invented or loosened),
    - the size sits inside the newest shipped manifest's policy band.
 4. Scaffold the manifest in a scratch skeleton with new-manifest-from-probe.py
    and prove install -> restore round-trips on the copy with it (the real patch
@@ -25,7 +26,7 @@ source is ever printed. --out receives status.json:
   {"status": "ready" | <reason code>, "reason": "...", "version": "...",
    "probe": <sanitized probe>, "anchors": [...]}
 The sanitized probe carries only the digest, byte count, version hints, and
-the selected anchor counts, which is exactly what a shipped manifest records.
+the selected and patch-seam anchor counts, which is what the ingest checks.
 """
 from __future__ import annotations
 
@@ -44,8 +45,8 @@ SCRIPTS = Path(__file__).resolve().parent
 SKELETON_FILES = (
     "patch/router_patch.py",
     "installer/GrokBotRouterInstaller.swift",
-    "scripts/install-macos.sh",
-    "remote/install.sh",
+    "installer-windows/main.cjs",
+    "compatibility/supported-apps.json",
 )
 
 
@@ -87,6 +88,7 @@ def run_quiet(command: list[str], env: dict[str, str] | None = None) -> subproce
 def select_anchors(probe: dict) -> tuple[list[str] | None, str]:
     counts = dict(probe.get("anchors") or {})
     mock_counts = dict(probe.get("mockAnchors") or {})
+    patch_counts = dict(probe.get("patchAnchors") or {})
     mock_variants = list(HOST_PROBE.KNOWN_MOCK_ANCHORS)
     problems = []
     selected = []
@@ -103,6 +105,9 @@ def select_anchors(probe: dict) -> tuple[list[str] | None, str]:
         if counts.get(anchor) != 1:
             problems.append(f"{anchor!r} appears {counts.get(anchor, 0)} times")
         selected.append(anchor)
+    for anchor in HOST_PROBE.PATCH_ANCHORS:
+        if patch_counts.get(anchor) != 1:
+            problems.append(f"patch seam {anchor!r} appears {patch_counts.get(anchor, 0)} times")
     if problems:
         return None, "; ".join(problems)
     return selected, ""
@@ -177,6 +182,7 @@ def main() -> int:
         "versionHints": hints,
         "anchors": {},
         "mockAnchors": {},
+        "patchAnchors": {anchor: 1 for anchor in HOST_PROBE.PATCH_ANCHORS},
         "customAnchors": {anchor: 1 for anchor in anchors},
         "candidates": {"routerMarker": []},
     }

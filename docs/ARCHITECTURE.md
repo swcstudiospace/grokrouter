@@ -12,21 +12,25 @@ This document is the implementation-level companion to [How it works, without th
 | Patched host executor | Decide stock versus routed path, sanitize the host payload, launch the router runtime and translate its result back into Grok's protocol | Provider implementation, long-term state or arbitrary tool execution |
 | Router runtime | Deterministic controls, stable Bot identity, provider/model state, replay protection, provider calls, transcript conversion and redacted audit | Grok's UI, permission decisions or the computer itself |
 | Codex SDK / OpenRouter / Claude Agent SDK / xAI | Model inference and provider-native thread state | Authority to invent a Grok tool that the host did not offer |
-| Native platform installer shells | Swift/AppKit on macOS and sandboxed Electron on Windows: exact compatibility checks, loopback/noVNC transport, checksummed install, provider setup, restore and cleanup | Grok account data or an unknown host build |
+| Native platform installer shells | Swift/AppKit on macOS and sandboxed Electron on Windows, each built locally by a pinned source installer (`scripts/install-macos.sh`, `scripts/install-windows.ps1`): exact compatibility checks, loopback/noVNC transport, checksummed install, provider setup, restore and cleanup | Grok account data or an unknown host build |
 
 ## Install and update flow
 
-1. The native installer verifies the supported Grok Bot app and exact version before opening a diagnostic session.
+1. The native installer verifies the Grok Bot app's vendor signature and reads its exact version. A version listed in `compatibility/supported-apps.json` proceeds on its own reviewed gate. A version strictly newer than every listed one proceeds only if the user checked **Allow unreviewed Grok Bot version (experimental)**; it is then passed to the payload as `--allow-unreviewed-version`. Older and in-between versions are refused before any diagnostic session opens.
 2. Grok Bot is restarted with Electron diagnostics bound to `127.0.0.1` only. The installer reuses an existing noVNC computer target when possible.
 3. Accurate macOS Vision OCR or the pinned offline Windows Tesseract worker, plus a harmless prompt probe, establishes that the Bot's Terminal is open and focused. Transfer stops if that cannot be proved.
 4. The installer types a small bootstrap through the connected noVNC RFB controller. Text is paced, every retry begins with Ctrl-C, and the archive plus every payload member has an expected SHA-256.
 5. `remote/install.sh` stages pinned Node dependencies and the router payload inside the Bot computer.
-6. `patch/router_patch.py` verifies an allowlisted stock-host SHA-256 and byte-count pair plus every source anchor exactly once. The exact pair can come from the payload or a downloaded host registry whose Ed25519 signature was verified against the public key pinned in the payload. It writes a persistent verified original under `/home/box/sand-data/grokbot-router-backup/`, syntax-checks the generated JavaScript and atomically activates it.
-7. The install script prints its authoritative sentinel before restarting the host. The platform app observes that terminal output, closes the diagnostic connection and relaunches Grok Bot normally.
+6. `remote/install.sh` selects the manifest for that exact desktop version (`patch/manifests/<version>.json`). `patch/router_patch.py` verifies an allowlisted stock-host SHA-256 and byte-count pair plus every manifest anchor and each of the three patch seams (group member dispatch, memory-extraction executor, episode-summary executor) exactly once. The exact pair can come from the payload or that version's downloaded host registry, whose Ed25519 signature is verified against the fork's public key (`compatibility/registry-public-key.pem`) pinned in the payload; registries refresh from `raw.githubusercontent.com/swcstudiospace/grokrouter/main/compatibility/`. It writes a persistent verified original under `/home/box/sand-data/grokbot-router-backup/`, syntax-checks the generated JavaScript and atomically activates it.
+7. The desktop installer runs installation with a deferred restart, observes the authoritative payload sentinel, and verifies native command registration while the gateway remains available. It then requests the host restart and requires its receipt before closing the diagnostic connection and reopening Grok Bot normally. Repair uses the same order; stock restore removes router commands before restarting.
 
 The installed runtime also starts a small persistent watchdog and registers it with the Bot desktop's XDG autostart. If Grok later replaces the live host with an allowlisted stock build while routing remains enabled, the watchdog reapplies the same exact hash, byte-count and anchor-gated patch and restarts that host. On an unknown replacement it checks for a signed registry update at most once per hour. An unsigned entry, unknown hash, wrong byte count, missing anchor, intentional stock restore or disabled router is never repaired automatically.
 
-An update follows the same path. Provider/model selections are preserved unless the installer explicitly changes them, while the packaged model catalog and runtime are replaced. A newly reviewed stock host for the same 0.30.0 seam can be added to the signed registry without replacing the installer. A new Grok Bot version or changed source seam still requires a new bundled manifest and the complete automated and fresh-Bot live gate.
+### Unreviewed-version tier
+
+With `--allow-unreviewed-version`, `remote/install.sh` confirms the version is newer than every reviewed one, then resolves the newest reviewed manifest whose anchors all appear exactly once on the live host (`router_patch.py --resolve-template`). The patcher accepts the host with trust `unreviewed-anchor-verified` only when it carries no GrokRouter, legacy or other-router marker, every required anchor and patch seam appears exactly once, a read-only patch passes `node --check`, and the byte count is inside that template's `anchorVerifiedHosts` size band. Every reviewed manifest ships with `anchorVerifiedHosts.enabled` set to `false`; the band is used only here. The untouched host is backed up before patching. Doctor reports `HOSTTRUST=UNREVIEWED-ANCHOR-VERIFIED` and an `UNREVIEWED VERSION` line. There is no signed registry for such a version, so `host-registry` and the watchdog skip refresh. A rejected host stops before any change and reports `PATCHANCHORS=` and `PATCHDRYRUN=` with the fingerprint. Structural checks cannot prove the backup is genuine stock; this tier is never used for a reviewed version.
+
+An update follows the same path. If the live file already contains a router, the patcher must exactly reconstruct it from a trusted stock backup using a supported published transformation before upgrading it: the current build, upstream beta.45, beta.46 and beta.47, and earlier fork builds (`patch/previous/`). A marker alone is insufficient. An unknown or foreign live file is never automatically replaced from an older backup. Provider/model selections, threads and audit history are preserved unless the installer explicitly changes them, while the packaged model catalog and runtime are replaced. A newly reviewed stock host for an already supported desktop version can be added to that version's signed registry without replacing the installer. A new Grok Bot version or changed source seam still requires a new bundled manifest and the complete automated and fresh-Bot live gate.
 
 ## Control turn
 
@@ -46,7 +50,7 @@ The installer links only missing skill names or links already owned by the curre
 
 Grok's ordinary hidden continuation prompts are filtered so a native tool result is not mistaken for another user request. A visible status message or permission bubble does not count as completion while an outer tool call remains unresolved; the matching result must still resume the provider. Every suppressed turn is recorded with a bounded reason and non-secret protocol IDs so a host-side approval gap cannot look like a silent provider failure.
 
-A finished background task is a distinct case: the stock host injects a hidden message tagged with `sandAutomationCompletionId`. The runtime strips only that hidden marker, forwards the completion to the active provider, and treats it as a new delivery boundary inside the existing user turn. This allows the child result to reach chat without replaying the earlier “subagent started” response. A durable signature combines that completion ID with later non-delivery tool-result IDs. It is claimed under the per-Bot lock before inference, expires after a bounded interval, and is cleared by reset. Sequential or concurrent host replays run once while controls and genuinely new tool rounds still proceed.
+A finished background task is a distinct case. The automation inbox injects a hidden message tagged with `sandAutomationCompletionId`. Native child revival uses a separate hidden parent request. The runtime unwraps Grok's model-facing `user_query` envelope, matches the exact hidden child-completion prefix, and uses the preserved `providerOptions.cursor.requestId` as its durable identity. Timestamps and separate message-ID parts do not hide the completion. Missing IDs, quoted lookalikes, and ordinary hidden reminders do not become completion events. The stock completion formatter is unchanged. It removes internal markers before forwarding the completion to the active provider and treats the completion as a new delivery boundary inside the existing user turn. This allows the child result to reach chat without replaying the earlier “subagent started” response. A durable signature combines that completion ID with later non-delivery tool-result IDs. It is claimed under the per-Bot lock before inference, expires after a bounded interval, and is cleared by reset. Sequential or concurrent host replays run once while controls and genuinely new tool rounds still proceed.
 
 ## Tool turn
 
@@ -58,7 +62,7 @@ Tool authority always flows from Grok outward:
 4. The host executor returns the structured request to Grok. It does not perform the action itself.
 5. Grok applies its existing permission behavior and performs the computer, file, browser or orchestration action.
 6. The matching host result appears in a later transcript invocation. The runtime normalizes it and resumes the same provider thread.
-7. The provider's final text is delivered once through Grok's normal assistant-delivery tool.
+7. Parent replies use Grok's canonical assistant-delivery handler. Native child sessions, identified by the host's `isSubagent` flag, finish through the response stream so Grok can collect their final text. A failed delivery result is not a completed answer; its durable receipt permits one recovery without replaying that receipt indefinitely.
 
 Printed pseudo-tool syntax is not authority. The guarded OpenRouter compatibility parser can recover a model's textual dialect only when it maps to the exact schema Grok offered for that turn. If Grok supplied no actionable schema, the text remains inert. This is why the latest OpenRouter Shell gate is correctly recorded as blocked rather than presented as tool parity.
 
@@ -99,9 +103,13 @@ Each guardrail records what it did in the audit (`droppedOptionalKeys`, `toolSup
 - **OpenRouter** uses the public `GET /api/v1/models`, which needs no credential.
 - **xAI** reads `GET /v1/models` on both `api.x.ai` and the subscription proxy with the OAuth bearer, merges them, and marks which models the subscription quota serves. `runXai` then routes a quota model to the proxy automatically.
 - **Anthropic** reads the Claude Agent SDK's `supportedModels()` over its control channel. The query is opened with an empty streaming prompt and closed immediately, so listing models never starts or bills a turn.
-- **Codex** has no list endpoint, so its packaged shortlist is a guide; any model ID is accepted.
+- **Codex** runs the pinned Codex CLI's `codex debug models`, which refreshes from the signed-in account and otherwise reads the CLI's bundled catalog. Only models the Codex picker lists are shown.
 
-Each list is cached for an hour with owner-only permissions, falls back to the last cached copy and then to the packaged list, and is refreshed on demand with `/models refresh`. Switching models reads only the cache, so `/model <id>` stays fast and works offline; an unknown ID produces a note rather than a refusal.
+Each list is cached for an hour per provider with owner-only permissions. The fallback order is live → cache → packaged list, and a discovery failure never breaks a turn. `/models refresh` forces a new read. The `/models` footer reports `Catalog: live|cached|bundled|packaged, updated …`, and `/router doctor` reports every provider's catalog freshness. Switching models reads only the cache, so `/model <id>` stays fast and works offline; an unlisted well-formed ID switches with a note rather than a refusal.
+
+Family aliases resolve against the cached catalog per provider namespace: `sonnet`, `opus`, `haiku`, `fable` (Anthropic IDs, or OpenRouter `anthropic/`), `sol`, `terra`, `luna`, `astra` (Codex, or OpenRouter `openai/`), and `grok` (xAI, or OpenRouter `x-ai/`). The newest version wins; minor versions compare as decimals, an undated ID outranks a dated snapshot, and `:batch` or `-pro` variants never match. With no match, a pinned alias applies (OpenRouter: `sonnet` → `anthropic/claude-sonnet-5.5`, `opus` → `anthropic/claude-opus-5.5`, `grok` → `x-ai/grok-4.7`). A Bot's saved model never changes on its own when a newer model appears.
+
+The installer model fields accept any well-formed ID, validated strictly (no spaces or shell characters), and offer suggestions such as `anthropic/claude-sonnet-5.5` and `anthropic/claude-opus-5.5`.
 
 ## OpenRouter catalog
 
@@ -125,17 +133,17 @@ Stable Bot, agent, chat, thread, lineage and root identifiers outrank request-sc
 
 ## Patch boundary
 
-The project never bundles Grok Bot's proprietary host source. `router_patch.py` is an original transformation with exact hashes and anchors. It injects one executor and one session selection branch. All large provider logic remains outside the host in the independently replaceable runtime.
+The project never bundles Grok Bot's proprietary host source. `router_patch.py` is an original transformation with exact per-version hashes, anchors and patch seams. It injects one executor, one session selection branch, stable Bot identity forwarding, and the group-member, memory-extraction and episode-summary executor hooks, without changing the native child formatter. All large provider logic remains outside the host in the independently replaceable runtime.
 
 ## Restore and bypass flow
 
 - `grokbot-router disable` leaves the installed adapter in place but sends new sessions down the stock path.
 - `grokbot-router enable` resumes routing.
-- `grokbot-router repair`, or **Repair** in GrokRouter, reapplies the adapter only when the live host passes the exact stock hash and anchor gates. It also reenables the lifecycle watchdog.
+- `grokbot-router repair`, or **Repair Router** in GrokRouter, reapplies the adapter only when the live host passes the exact stock hash and anchor gates for a reviewed version, or the structural gates for an opted-in unreviewed version. It also reenables the lifecycle watchdog.
 - `grokbot-router uninstall`, or **Restore stock** in GrokRouter, verifies the persistent stock backup, copies it over the routed host and emits the restore sentinel before a delayed restart.
 - GrokRouter closes its temporary loopback diagnostic session and reopens Grok Bot normally whether install or restore succeeds or fails.
 
-The exact beta.38 artifact passed install, verified stock restore and post-restore reinstall before its final fresh-Bot routing proof. Restore is therefore part of the acceptance cycle, not an untested emergency instruction.
+The beta.47 artifact passed install, verified stock restore and post-restore reinstall on 0.30.0 and 0.36.0 before its fresh-Bot routing proof. Restore is therefore part of the acceptance cycle, not an untested emergency instruction.
 
 ## Trust and data boundaries
 

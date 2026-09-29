@@ -1,6 +1,6 @@
 # Coding-agent guide
 
-This repository is an unofficial, reversible model router for the official Grok Bot 0.30.0 and 0.44.0 desktop apps. Each supported version has its own manifest in `patch/manifests/`; add a version only from a real host probe (`scripts/host-probe.py`), never by guessing anchors. Keep the stock Grok interface, computer, tools, and orchestration layer intact; change only the version-gated inference seam.
+This repository is the maintained fork (`swcstudiospace/grokrouter`) of an unofficial, reversible model router for exact official Grok Bot desktop versions listed in `compatibility/supported-apps.json`. Each supported version has its own manifest in `patch/manifests/`; add a version only from a real host probe (`scripts/host-probe.py`), never by guessing anchors. Keep the stock Grok interface, computer, tools, and orchestration layer intact; change only the version-gated inference seam.
 
 ## Cold start
 
@@ -11,13 +11,16 @@ Read these files in order:
 3. `docs/ARCHITECTURE.md` for the two-process adapter design.
 4. `docs/FRESH-BOT-ACCEPTANCE.md` for the release gate.
 5. `docs/TEST-MATRIX.md` before changing any verified claim.
+6. `docs/VERSION-TRACKING.md` before adding or reviewing a Grok Bot version.
 
-The main implementation is `runtime/run-provider.mjs`. `patch/router_patch.py` injects the small host executor. `remote/install.sh` installs the checksummed payload. `installer/GrokBotRouterInstaller.swift` is the native Mac installer.
+The main implementation is `runtime/run-provider.mjs`. `patch/router_patch.py` injects the small host executor. `remote/install.sh` installs the checksummed payload. `installer/GrokBotRouterInstaller.swift` is the native Mac installer; `installer-windows/` is the Windows preview installer. `scripts/install-macos.sh` and `scripts/install-windows.ps1` build either one from pinned source.
 
 ## Non-negotiable rules
 
 - Never bundle Grok Bot's proprietary host source.
-- Never loosen the exact app-version, stock-host hash, or source-anchor gates.
+- Never loosen the reviewed-version gates: exact app version, stock-host hash and byte count, source anchors, and patch seams.
+- The unreviewed-version path must stay opt-in, default off, and limited to a Grok Bot strictly newer than every reviewed version. It must never grant trust to a reviewed, older, or in-between version.
+- Host registries are signed with this fork's Ed25519 key (`compatibility/registry-public-key.pem`). Private keys never enter the repository, CI, logs, or the workspace; maintainers sign locally.
 - Never print, log, commit, or copy provider credentials into project files. Platform renderers must clear password fields immediately after the protected handoff.
 - Preserve the verified stock backup and one-click restore path.
 - Treat provider/model/thread state as per-Bot state, never global state.

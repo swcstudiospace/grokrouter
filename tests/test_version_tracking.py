@@ -2,8 +2,8 @@
 
 Covers scripts/check-grokbot-version.py, scripts/new-manifest-from-probe.py,
 and scripts/auto-probe.py (the unattended runner probe), plus the standing
-contract that every shipped manifest version appears in the hardcoded
-installer version lists (so a future scaffold cannot silently miss one).
+contract that compatibility/supported-apps.json, the shipped manifests, and
+the Swift installer's visible version list agree.
 """
 import hashlib
 import importlib.util
@@ -28,19 +28,18 @@ SWIFT_SNIPPET = """\
 private let supportedGrokVersions = ["0.30.0", "0.44.0"]
         let eyebrow = NSTextField(labelWithString: "GROK BOT 0.30.0 · 0.44.0")
 """
-INSTALL_MACOS_SNIPPET = """\
-[[ -d "/Applications/Grok Bot.app" ]] \\
-  || fail "install Grok Bot 0.30.0 or 0.44.0 in Applications first"
+WINDOWS_SNIPPET = """\
+const SUPPORTED_GROK_VERSIONS = ["0.30.0", "0.44.0"];
 """
-REMOTE_INSTALL_SNIPPET = """\
-  "$PAYLOAD_ROOT/patch/manifests/0.30.0.json" \\
-  "$PAYLOAD_ROOT/patch/manifests/0.44.0.json" \\
-  "$PAYLOAD_ROOT/compatibility/0.30.0-hosts.json" \\
-"""
+PATCH_SEAMS = {
+    "const memberResult = await runner.run(promptForAttempt, {": 1,
+    "const extraction = await extractMemories({": 1,
+    "const narrative = await summarizeEpisode({": 1,
+}
 
 
 def make_probe(version="0.58.0", sha="a" * 64, size=28264284,
-               counts=None, markers=None, hints=None):
+               counts=None, markers=None, hints=None, seams=None):
     anchors = counts if counts is not None else {
         "function createMockPromptExecutor(options2)": 1,
         "createSession(onRequestId, sessionOptions)": 1,
@@ -54,6 +53,7 @@ def make_probe(version="0.58.0", sha="a" * 64, size=28264284,
         "versionHints": [version] if hints is None else hints,
         "anchors": {},
         "mockAnchors": {},
+        "patchAnchors": dict(PATCH_SEAMS) if seams is None else seams,
         "customAnchors": dict(anchors),
         "candidates": {"routerMarker": [] if markers is None else markers},
     }
@@ -66,12 +66,13 @@ def make_skeleton(root: Path) -> None:
     for name in ("0.30.0.json", "0.44.0.json"):
         (root / "patch" / "manifests" / name).write_text(
             (PROJECT_ROOT / "patch" / "manifests" / name).read_text())
+    (root / "compatibility").mkdir()
+    (root / "compatibility" / "supported-apps.json").write_text(
+        json.dumps({"versions": ["0.30.0", "0.44.0"]}))
     (root / "installer").mkdir()
     (root / "installer" / "GrokBotRouterInstaller.swift").write_text(SWIFT_SNIPPET)
-    (root / "scripts").mkdir()
-    (root / "scripts" / "install-macos.sh").write_text(INSTALL_MACOS_SNIPPET)
-    (root / "remote").mkdir()
-    (root / "remote" / "install.sh").write_text(REMOTE_INSTALL_SNIPPET)
+    (root / "installer-windows").mkdir()
+    (root / "installer-windows" / "main.cjs").write_text(WINDOWS_SNIPPET)
 
 
 def run_ingest(root: Path, probe: dict, version: str, anchors: list[str]):
@@ -140,20 +141,50 @@ class ProbeIngestTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def test_valid_probe_scaffolds_manifest_and_updates_gates(self):
+    def test_valid_probe_scaffolds_the_exact_per_version_layout(self):
         result = run_ingest(self.root, make_probe(), "0.58.0", ANCHORS_044)
         self.assertEqual(result.returncode, 0, result.stderr)
         manifest = json.loads((self.root / "patch" / "manifests" / "0.58.0.json").read_text())
         self.assertEqual(manifest["grokBotVersion"], "0.58.0")
         self.assertEqual(manifest["stockHosts"], [{"sha256": "a" * 64, "bytes": 28264284}])
         self.assertEqual(manifest["requiredAnchors"], ANCHORS_044)
+        self.assertIs(manifest["anchorVerifiedHosts"]["enabled"], False)
+        registry = json.loads((self.root / "compatibility" / "0.58.0-hosts.json").read_text())
+        self.assertEqual(registry, {"schemaVersion": 1, "grokBotVersion": "0.58.0",
+                                    "stockHosts": manifest["stockHosts"]})
+        self.assertFalse((self.root / "compatibility" / "0.58.0-hosts.json.sig").exists())
+        supported = json.loads((self.root / "compatibility" / "supported-apps.json").read_text())
+        self.assertEqual(supported["versions"], ["0.30.0", "0.44.0", "0.58.0"])
         swift = (self.root / "installer" / "GrokBotRouterInstaller.swift").read_text()
-        self.assertIn('["0.30.0", "0.44.0", "0.58.0"]', swift)
+        self.assertIn('supportedGrokVersions = ["0.30.0", "0.44.0", "0.58.0"]', swift)
         self.assertIn("GROK BOT 0.30.0 · 0.44.0 · 0.58.0", swift)
-        macos = (self.root / "scripts" / "install-macos.sh").read_text()
-        self.assertIn("install Grok Bot 0.30.0 or 0.44.0 or 0.58.0 in Applications first", macos)
-        remote = (self.root / "remote" / "install.sh").read_text()
-        self.assertIn('"$PAYLOAD_ROOT/patch/manifests/0.58.0.json"', remote)
+        windows = (self.root / "installer-windows" / "main.cjs").read_text()
+        self.assertIn('SUPPORTED_GROK_VERSIONS = ["0.30.0", "0.44.0", "0.58.0"]', windows)
+
+    def test_versions_sort_numerically(self):
+        result = run_ingest(self.root, make_probe(version="0.100.0"), "0.100.0", ANCHORS_044)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        supported = json.loads((self.root / "compatibility" / "supported-apps.json").read_text())
+        self.assertEqual(supported["versions"], ["0.30.0", "0.44.0", "0.100.0"])
+
+    def test_ingest_refuses_a_probe_that_does_not_prove_every_patch_seam(self):
+        for seams in ({**PATCH_SEAMS, "const narrative = await summarizeEpisode({": 0}, None):
+            probe = make_probe(seams=seams)
+            if seams is None:
+                del probe["patchAnchors"]
+            with self.subTest(seams=seams):
+                result = run_ingest(self.root, probe, "0.58.0", ANCHORS_044)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((self.root / "patch" / "manifests" / "0.58.0.json").exists())
+                self.assertFalse((self.root / "compatibility" / "0.58.0-hosts.json").exists())
+
+    def test_a_missing_installer_literal_writes_nothing(self):
+        (self.root / "installer-windows" / "main.cjs").write_text("// no version list\n")
+        result = run_ingest(self.root, make_probe(), "0.58.0", ANCHORS_044)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / "patch" / "manifests" / "0.58.0.json").exists())
+        supported = json.loads((self.root / "compatibility" / "supported-apps.json").read_text())
+        self.assertEqual(supported["versions"], ["0.30.0", "0.44.0"])
 
     def test_ingest_refuses_an_existing_version(self):
         (self.root / "patch" / "manifests" / "0.58.0.json").write_text("{}")
@@ -244,11 +275,16 @@ class AutoProbeTests(unittest.TestCase):
         self.assertIsNone(status["probe"])
 
     def test_moved_anchors_are_never_guessed(self):
-        source = self.NEW_HOST.replace("const mockResponse = options2.agentMockResponse;",
-                                       "const mockResponse = readMock(options2);")
-        status = self.run_probe(source)
-        self.assertEqual(status["status"], "anchors-moved")
-        self.assertEqual(status["anchors"], [])
+        moved = {
+            "const mockResponse = options2.agentMockResponse;": "const mockResponse = readMock(options2);",
+            "const extraction = await extractMemories({": "const extracted = await extractMemories({",
+        }
+        for anchor, replacement in moved.items():
+            with self.subTest(anchor=anchor):
+                status = self.run_probe(self.NEW_HOST.replace(anchor, replacement))
+                self.assertEqual(status["status"], "anchors-moved")
+                self.assertIn(anchor, status["reason"])
+                self.assertEqual(status["anchors"], [])
 
     def test_a_patched_bot_computer_is_not_stock(self):
         status = self.run_probe(self.NEW_HOST + "// GROKBOT_MODEL_ROUTER_V45\n")
@@ -264,26 +300,16 @@ class AutoProbeTests(unittest.TestCase):
 
 
 class ShippedGateConsistencyTests(unittest.TestCase):
-    """Every shipped manifest version must appear in each hardcoded gate."""
+    """supported-apps.json is the one list every shipped gate must agree with."""
 
     def test_manifests_and_installer_gates_agree(self):
-        manifests_dir = PROJECT_ROOT / "patch" / "manifests"
-        versions = sorted(
+        supported = json.loads((PROJECT_ROOT / "compatibility" / "supported-apps.json").read_text())["versions"]
+        manifests = sorted(
             json.loads(path.read_text())["grokBotVersion"]
-            for path in manifests_dir.glob("*.json"))
-        self.assertTrue(versions)
+            for path in (PROJECT_ROOT / "patch" / "manifests").glob("*.json"))
+        self.assertEqual(manifests, sorted(supported))
         swift = (PROJECT_ROOT / "installer" / "GrokBotRouterInstaller.swift").read_text()
-        listed = re.findall(r'private let supportedGrokVersions = \[([^\]]*)\]', swift)
-        self.assertEqual(len(listed), 1)
-        for version in versions:
-            self.assertIn(f'"{version}"', listed[0])
-            self.assertIn(version, swift.split("GROK BOT ", 1)[1].split('"', 1)[0])
-        macos = (PROJECT_ROOT / "scripts" / "install-macos.sh").read_text()
-        for version in versions:
-            self.assertIn(version, macos)
-        remote = (PROJECT_ROOT / "remote" / "install.sh").read_text()
-        for version in versions:
-            self.assertIn(f'"$PAYLOAD_ROOT/patch/manifests/{version}.json"', remote)
+        self.assertEqual(swift.split("GROK BOT ", 1)[1].split('"', 1)[0], " · ".join(supported))
 
 
 if __name__ == "__main__":

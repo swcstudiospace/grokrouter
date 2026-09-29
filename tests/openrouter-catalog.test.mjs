@@ -69,7 +69,7 @@ test("caches the catalog for an hour and falls back to a stale copy on failure",
   };
   try {
     const first = await loadCatalog(config, okFetch, { now: 1_000 });
-    assert.equal(first.source, "network");
+    assert.equal(first.source, "live");
     assert.equal(first.models.length, 5);
     const cachedFile = JSON.parse(await readFile(config.openRouterCatalogPath, "utf8"));
     assert.equal(cachedFile.models.length, 5);

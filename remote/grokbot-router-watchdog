@@ -12,8 +12,17 @@ done
 INSTALL_ROOT="$(cd -P "$(dirname "$SCRIPT_SOURCE")/.." && pwd)"
 CONFIG_PATH="$INSTALL_ROOT/provider.json"
 PATCHER="$INSTALL_ROOT/patch/router_patch.py"
-MANIFEST="${ROUTER_PATCH_MANIFEST:-$INSTALL_ROOT/patch/manifests}"
 HOST_REGISTRY_TOOL="$INSTALL_ROOT/bin/host-registry"
+# host-registry maps the recorded Grok Bot version to the patcher's manifest
+# and, for an opted-in unreviewed newer version, its explicit trust flag.
+VERSION_PATCH_TEXT="$("$HOST_REGISTRY_TOOL" patch-args)" || exit 1
+# A read loop, not mapfile: the test suite also runs these under macOS bash 3.2.
+VERSION_PATCH_ARGS=()
+while IFS= read -r patch_arg; do VERSION_PATCH_ARGS+=("$patch_arg"); done <<< "$VERSION_PATCH_TEXT"
+UNREVIEWED_VERSION=""
+if [[ "${VERSION_PATCH_ARGS[2]:-}" == "--unreviewed-version" ]]; then
+  UNREVIEWED_VERSION="${VERSION_PATCH_ARGS[3]}"
+fi
 HOST="${ROUTER_PATCH_HOST:-/home/box/sand-host/host-main.cjs}"
 BACKUP="${ROUTER_PATCH_BACKUP:-/home/box/sand-data/grokbot-router-backup/host-main.cjs.stock}"
 LOCK_DIR="/home/box/sand-data/grokbot-router-watchdog.lock"
@@ -29,16 +38,16 @@ set_registry_args() {
 set_registry_args
 run_patch_doctor() {
   if [[ -n "$ACTIVE_REGISTRY" ]]; then
-    python3 "$PATCHER" --doctor --host "$HOST" --backup "$BACKUP" --manifest "$MANIFEST" --host-registry "$ACTIVE_REGISTRY" --json
+    python3 "$PATCHER" --doctor --host "$HOST" --backup "$BACKUP" "${VERSION_PATCH_ARGS[@]}" --host-registry "$ACTIVE_REGISTRY" --json
   else
-    python3 "$PATCHER" --doctor --host "$HOST" --backup "$BACKUP" --manifest "$MANIFEST" --json
+    python3 "$PATCHER" --doctor --host "$HOST" --backup "$BACKUP" "${VERSION_PATCH_ARGS[@]}" --json
   fi
 }
 run_patch_install() {
   if [[ -n "$ACTIVE_REGISTRY" ]]; then
-    python3 "$PATCHER" --host "$HOST" --backup "$BACKUP" --manifest "$MANIFEST" --host-registry "$ACTIVE_REGISTRY" --json
+    python3 "$PATCHER" --host "$HOST" --backup "$BACKUP" "${VERSION_PATCH_ARGS[@]}" --host-registry "$ACTIVE_REGISTRY" --json
   else
-    python3 "$PATCHER" --host "$HOST" --backup "$BACKUP" --manifest "$MANIFEST" --json
+    python3 "$PATCHER" --host "$HOST" --backup "$BACKUP" "${VERSION_PATCH_ARGS[@]}" --json
   fi
 }
 
@@ -78,7 +87,8 @@ while true; do
   fi
 
   now="$(date +%s)"
-  if (( now - last_registry_refresh > 3600 )) && [[ -x "$HOST_REGISTRY_TOOL" ]]; then
+  # An unreviewed version has no signed registry to refresh.
+  if [[ -z "$UNREVIEWED_VERSION" ]] && (( now - last_registry_refresh > 3600 )) && [[ -x "$HOST_REGISTRY_TOOL" ]]; then
     if "$HOST_REGISTRY_TOOL" refresh >/dev/null 2>&1; then
       set_registry_args
       log_event "signed-compatibility-registry-refreshed"
@@ -99,13 +109,17 @@ while true; do
 
   if run_patch_install >/dev/null 2>&1; then
     repair_count=$((repair_count + 1))
-    log_event "known-stock-host-repaired"
+    if [[ -n "$UNREVIEWED_VERSION" ]]; then
+      log_event "unreviewed-anchor-verified-host-repaired"
+    else
+      log_event "known-stock-host-repaired"
+    fi
     pkill -f '/home/box/sand-host/host-main.cjs' >/dev/null 2>&1 || true
     sleep 15
   else
-    # Hosts that fail both the exact signed list and structural verification
-    # (marker-free, every anchor exactly once, read-only patch passes) remain
-    # untouched. Retry slowly in case Grok is still staging a stock host.
+    # Hosts that pass neither the exact reviewed list nor, for an opted-in
+    # unreviewed version, structural verification remain untouched. Retry
+    # slowly in case Grok is still staging a stock host.
     log_event "repair-refused-unknown-or-incomplete-host"
     sleep 60
   fi

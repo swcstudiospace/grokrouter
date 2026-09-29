@@ -1,17 +1,23 @@
 # Grok Bot version tracking
 
-Grok Bot auto-updates; GrokRouter refuses any version without a manifest. This
-pipeline closes that gap without ever loosening a gate. Detection and the
-draft PR are automatic; support is claimed only after the live gate.
+Grok Bot auto-updates. GrokRouter treats every desktop version as a separate
+gate: a version listed in `compatibility/supported-apps.json` has its own
+manifest in `patch/manifests/` and its own signed host registry in
+`compatibility/`. Anything else is refused unless the user turns on the
+[experimental unreviewed-version opt-in](#interim-the-unreviewed-version-opt-in).
+This pipeline closes the gap without ever loosening a gate. Detection and the
+draft PR are automatic; signing is a local maintainer step; support is claimed
+only after the live gate.
 
 ```mermaid
 flowchart LR
   W[watch: daily feed check] -->|new version| I[tracking issue]
   W -->|runner enabled| P[probe: self-hosted runner in a stock Bot computer]
-  P -->|ready| G[Ingest host probe: manifest, tests, draft PR, CI]
+  P -->|ready| G[Ingest host probe: manifest, unsigned registry, draft PR, CI]
   P -->|anything else| C[comment on the issue with the reason]
   I -.->|manual fallback| M[human probe + Ingest host probe]
-  G --> L[live fresh-Bot gate, then merge]
+  G --> S[maintainer signs the registry locally]
+  S --> L[live fresh-Bot gate, then merge]
 ```
 
 ## Stage 1 — detection (automatic)
@@ -23,9 +29,10 @@ feed for Apple-silicon Macs:
 python3 scripts/check-grokbot-version.py --check
 ```
 
-Exit `2` means the feed reports a version with no file in `patch/manifests/`.
-The workflow then opens (or reuses) a tracking issue with the probe
-instructions below. It never edits a manifest and never claims support.
+Exit `2` means the feed reports a version with no file in `patch/manifests/`
+(every reviewed version has one). The workflow then opens (or reuses) a
+tracking issue with the probe instructions below. It never edits a manifest
+and never claims support.
 
 You can run the same check by hand at any time; without `--check` it just
 prints the JSON report and exits `0`.
@@ -33,8 +40,9 @@ prints the JSON report and exits `0`.
 ## Stage 2a — automatic probe (self-hosted Bot-computer runner)
 
 The stock host lives only inside a Grok Bot computer
-(`/home/box/sand-host/host-main.cjs`); the desktop DMG from the feed does not
-contain it, so a GitHub-hosted runner cannot probe a new build. Instead a
+(`/home/box/sand-host/host-main.cjs`). The desktop download does not contain
+it: unpacking the 0.61.0 DMG shows no host anchors in `app.asar`. A
+GitHub-hosted runner therefore cannot probe a new build. Instead a
 GitHub Actions runner runs inside one dedicated Bot computer. When the feed
 reports a new version, the `probe` job runs `scripts/auto-probe.py` there:
 
@@ -43,8 +51,10 @@ reports a new version, the `probe` job runs `scripts/auto-probe.py` there:
 3. accepts the build only if it has no router marker, its SHA-256 is not an
    already-shipped stock host, its version hints name the new version, the
    executor/session/session-options anchors and exactly one known
-   mock-response dialect each appear exactly once, and its size sits in the
-   newest manifest's band;
+   mock-response dialect each appear exactly once, the three patch seams
+   (group member dispatch, memory-extraction executor, episode-summary
+   executor) each appear exactly once, and its size sits in the newest
+   manifest's band;
 4. scaffolds the manifest in a scratch skeleton and proves
    install → restore on the copy with the real patcher (`node --check`
    included) returns the exact stock bytes.
@@ -116,11 +126,19 @@ python3 scripts/host-probe.py \
   --anchor 'const mainSessionOptions = {' > /tmp/probe.txt
 ```
 
-If an anchor counts anything other than exactly once, use the probe's
+The probe always reports `patchAnchors`, the three seams the patch hooks in
+every version (`const memberResult = await runner.run(promptForAttempt, {`,
+`const extraction = await extractMemories({`,
+`const narrative = await summarizeEpisode({`). Each must count exactly once;
+a moved seam means the patcher needs a code change, not just new anchors.
+
+If a manifest anchor counts anything other than exactly once, use the probe's
 `candidates` lines to pick the replacement source line for the new build,
 re-run with `--anchor '<exact line>'` for it, and confirm every chosen anchor
 counts exactly once with an empty `candidates.routerMarker` (a non-empty
-marker means the host is not stock — stop).
+marker means the host is not stock — stop). The mock-response line differs by
+version: 0.30.0 and 0.36.0 read `process.env.SAND_AGENT_MOCK_RESPONSE`, 0.44.0
+reads `options2.agentMockResponse`; the probe counts both.
 
 A maintainer can paste the complete probe output into the **Ingest host probe**
 workflow (dispatch inputs: `version`, `probe_json`, one reviewed anchor per line
@@ -132,35 +150,91 @@ python3 scripts/new-manifest-from-probe.py \
 ```
 
 The script validates the probe (stock host, digest shape, size inside the
-shipped policy band, version hint agreement, every anchor exactly once) and
-then writes `patch/manifests/<version>.json` plus the installer version-list
-updates (`GrokBotRouterInstaller.swift`, `install-macos.sh`,
-`remote/install.sh`). It refuses to overwrite an existing manifest, refuses a
-non-stock host, and reloads the written manifest through the same
-`router_patch.load_manifest` gates as the shipped ones. The workflow runs the
-patch tests, opens a **draft** PR with the do-not-merge checklist, and
-dispatches CI on the branch (a PR opened with `GITHUB_TOKEN` fires no
-`pull_request` workflows). The automatic path calls this same workflow.
+newest manifest's band, version hint agreement, every anchor and every patch
+seam exactly once) and then writes the beta.47 per-version layout:
+
+- `patch/manifests/<version>.json` with `anchorVerifiedHosts.enabled` set to
+  `false` (the size band is kept only to bound a later unreviewed version);
+- the version added to `compatibility/supported-apps.json`;
+- an **unsigned** `compatibility/<version>-hosts.json`;
+- the version literals in `installer/GrokBotRouterInstaller.swift` and
+  `installer-windows/main.cjs`.
+
+It refuses to overwrite an existing manifest or registry, refuses a non-stock
+host, prepares every edit before writing so a missing literal changes nothing,
+and reloads the written manifest through the same `router_patch.load_manifest`
+gates as the shipped ones. The workflow opens a **draft** PR with the
+do-not-merge checklist and dispatches CI on the branch (a PR opened with
+`GITHUB_TOKEN` fires no `pull_request` workflows). The automatic path calls
+this same workflow. CI never holds the signing key, so the draft cannot pass
+registry verification until a maintainer signs it.
+
+## Stage 2c — sign the registry (maintainer, local)
+
+On the maintainer's machine, check out the draft branch and run:
+
+```bash
+node scripts/sign-host-registry.mjs compatibility/<version>-hosts.json
+```
+
+The private key is this fork's Ed25519 registry key at
+`~/.config/grokrouter/release/host-registry-private.pem` (override the path with
+`GROKROUTER_HOST_REGISTRY_PRIVATE_KEY`). It never enters the repository, CI, or
+a log. Its public half is `compatibility/registry-public-key.pem`; upstream's
+signatures are not trusted by this fork. Commit
+`compatibility/<version>-hosts.json.sig` with the registry. Installed routers
+refresh registries from
+`https://raw.githubusercontent.com/swcstudiospace/grokrouter/main/compatibility/`.
 
 ## Stage 3 — proof (manual, required)
 
 Nothing is supported until a human completes, on the new version:
 
-1. `npm test`.
+1. `npm test` with the signed registry.
 2. The full fresh-Bot procedure in `docs/FRESH-BOT-ACCEPTANCE.md`
    (install → restore → reinstall → new Bot → `/router doctor` →
-   `/provider` → one normal turn).
+   `/provider` → one normal turn, plus the capability proof).
 3. A `docs/TEST-MATRIX.md` row with the visible result and redacted audit
    receipt — code inspection alone never flips a row to Pass.
-4. The README supported-version badge/message, only after the above pass.
+4. The README compatibility table and badge, only after the above pass.
+
+A manifest in the repository without that live pass is a reviewed host, not a
+supported version. 0.44.0 is in that state: its host hash is from a live probe,
+but the three beta.47 patch seams have not been proven on a live 0.44.0 probe
+and no fresh-Bot acceptance has run.
+
+## Interim: the unreviewed-version opt-in
+
+Until a new version passes Stage 3, users can check **Allow unreviewed Grok Bot
+version (experimental)** in either installer. It is off by default and applies
+only to a version strictly newer than every version in
+`compatibility/supported-apps.json`. Older and in-between versions are always
+refused, and a reviewed version never uses this path.
+
+With the opt-in, `remote/install.sh --allow-unreviewed-version` picks the
+newest reviewed manifest whose anchors all appear exactly once on the live host
+and accepts the host only by structural verification: no router marker, every
+required anchor and patch seam exactly once, a read-only patch that passes
+`node --check`, and a size inside that manifest's band. It backs up the
+untouched host, and Doctor reports `HOSTTRUST=UNREVIEWED-ANCHOR-VERIFIED` plus
+an `UNREVIEWED VERSION` line. No signed registry exists for an unreviewed
+version, so the watchdog never refreshes one.
+
+If the build moved an anchor or seam, installation stops before changing
+anything and prints a compatibility report including `PATCHANCHORS=` and
+`PATCHDRYRUN=`. Treat that report as the trigger for Stage 2b. Structural
+checks cannot prove the backup is genuine stock, which is why the opt-in is
+never a substitute for a reviewed manifest.
 
 ## Design rules
 
 - Detection, probing, and scaffolding are automatic; trust is not. No workflow
-  merges, tags, or edits a manifest from anything but a live probe.
+  merges, tags, signs, or edits a manifest from anything but a live probe.
 - Anchor strings are never invented. The automatic probe only reuses anchors
   the patcher already hooks and only when each counts exactly once; a version
   with moved source lines needs a new reviewed anchor set from probe
   candidates, not a reused old one.
 - Size-band or policy changes are conscious edits, never auto-adjusted: the
   ingest fails outside the shipped band so a human reviews it.
+- The unreviewed opt-in stays off by default and never widens to reviewed,
+  older, or in-between versions.

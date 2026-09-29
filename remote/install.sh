@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-ROUTER_VERSION="0.1.0-beta.46"
+ROUTER_VERSION="0.1.0-beta.48"
 PAYLOAD_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INSTALL_ROOT="/home/box/sand-data/grokbot-router"
 INSTALL_PARENT="/home/box/sand-data"
+GROK_VERSION=""
 DEFAULT_PROVIDER="codex"
 CODEX_MODEL="gpt-5.6-sol"
 OPENROUTER_MODEL="anthropic/claude-sonnet-5"
@@ -18,6 +19,7 @@ CODEX_MODEL_EXPLICIT=0
 OPENROUTER_MODEL_EXPLICIT=0
 ANTHROPIC_MODEL_EXPLICIT=0
 XAI_MODEL_EXPLICIT=0
+ALLOW_UNREVIEWED_VERSION=0
 START_WATCHDOG=1
 GROK_SKILLS_ROOT="${ROUTER_GROK_SKILLS_ROOT:-/home/box/.grok/skills}"
 INSTALL_ATTEMPT="${ROUTER_INSTALL_ATTEMPT:-LOCAL}"
@@ -55,6 +57,9 @@ usage() {
     "GrokRouter installer ${ROUTER_VERSION}" \
     "" \
     "Usage: install.sh [options]" \
+    "  --grok-version VERSION       Exact desktop version verified by the installer" \
+    "  --allow-unreviewed-version   Experimental: accept a Grok Bot newer than every" \
+    "                               reviewed version by structural host checks" \
     "  --provider codex|openrouter|anthropic|xai" \
     "  --providers comma-separated subset of codex,openrouter,anthropic,xai" \
     "  --codex-model MODEL" \
@@ -68,6 +73,14 @@ usage() {
 RESTART_HOST=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --grok-version)
+      GROK_VERSION="${2:?missing Grok Bot version}"
+      shift 2
+      ;;
+    --allow-unreviewed-version)
+      ALLOW_UNREVIEWED_VERSION=1
+      shift
+      ;;
     --provider)
       DEFAULT_PROVIDER="${2:?missing provider}"
       PROVIDER_EXPLICIT=1
@@ -129,14 +142,24 @@ is_known_provider() {
 if ! is_known_provider "$DEFAULT_PROVIDER"; then
   fail_install "INVALID_PROVIDER" "--provider must be one of: ${KNOWN_PROVIDERS// /, }"
 fi
-if [[ ! "$OPENROUTER_MODEL" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._:+-]+$ ]]; then
+# Desktop installers type these IDs into the Bot terminal, so only plain
+# model-ID characters pass: no spaces, quotes, or shell metacharacters.
+PLAIN_MODEL_PATTERN='^[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}$'
+OPENROUTER_MODEL_PATTERN='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}/[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}$'
+if [[ ! "$CODEX_MODEL" =~ $PLAIN_MODEL_PATTERN ]]; then
+  fail_install "INVALID_CODEX_MODEL" "--codex-model must be a plain model ID"
+fi
+if [[ ! "$OPENROUTER_MODEL" =~ $OPENROUTER_MODEL_PATTERN ]]; then
   fail_install "INVALID_OPENROUTER_MODEL" "--openrouter-model must use vendor/model format"
 fi
-if [[ ! "$ANTHROPIC_MODEL" =~ ^[A-Za-z0-9._:+-]+$ ]]; then
+if [[ ! "$ANTHROPIC_MODEL" =~ $PLAIN_MODEL_PATTERN ]]; then
   fail_install "INVALID_ANTHROPIC_MODEL" "--anthropic-model must be a plain model ID"
 fi
-if [[ ! "$XAI_MODEL" =~ ^[A-Za-z0-9._:+-]+$ ]]; then
+if [[ ! "$XAI_MODEL" =~ $PLAIN_MODEL_PATTERN ]]; then
   fail_install "INVALID_XAI_MODEL" "--xai-model must be a plain model ID"
+fi
+if [[ "$ALLOW_UNREVIEWED_VERSION" == "1" && ! "$GROK_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  fail_install "INVALID_UNREVIEWED_VERSION" "--allow-unreviewed-version requires an exact --grok-version X.Y.Z"
 fi
 if [[ -z "$ENABLED_PROVIDERS" ]]; then
   fail_install "INVALID_PROVIDERS" "--providers must list at least one provider"
@@ -176,6 +199,44 @@ if [[ ! -f "$PAYLOAD_ROOT/SHA256SUMS" ]]; then
   fail_install "MISSING_MANIFEST" "payload integrity manifest is missing"
 fi
 (cd "$PAYLOAD_ROOT" && sha256sum -c SHA256SUMS >/dev/null)
+PATCH_HOST="${ROUTER_PATCH_HOST:-/home/box/sand-host/host-main.cjs}"
+PATCH_BACKUP="${ROUTER_PATCH_BACKUP:-/home/box/sand-data/grokbot-router-backup/host-main.cjs.stock}"
+if [[ -z "$GROK_VERSION" ]]; then
+  # The desktop installers always pass the exact verified app version, and
+  # that version's manifest is then used exactly. A manual install without one
+  # selects the manifest the live host or its stock backup proves: exact stock
+  # hash first, then anchors, newest version first.
+  GROK_VERSION="$(python3 "$PAYLOAD_ROOT/patch/router_patch.py" --resolve-version \
+    --host "$PATCH_HOST" --backup "$PATCH_BACKUP" --manifest "$PAYLOAD_ROOT/patch/manifests" 2>/dev/null)" \
+    || fail_install "UNKNOWN_VERSION" "the Grok Bot version could not be resolved from this Bot computer; pass --grok-version"
+fi
+MANIFEST_VERSION="$GROK_VERSION"
+if [[ "$ALLOW_UNREVIEWED_VERSION" == "1" ]]; then
+  # The experimental opt-in never applies to a reviewed, older, or in-between
+  # version: those keep their exact stock-hash gates.
+  if ! python3 - "$PAYLOAD_ROOT/compatibility/supported-apps.json" "$GROK_VERSION" <<'PY'
+import json, sys
+key = lambda value: tuple(int(part) for part in value.split("."))
+supported = json.load(open(sys.argv[1]))["versions"]
+raise SystemExit(0 if all(key(sys.argv[2]) > key(item) for item in supported) else 1)
+PY
+  then
+    fail_install "UNREVIEWED_VERSION_NOT_NEWER" "--allow-unreviewed-version applies only to a Grok Bot newer than every reviewed version; $GROK_VERSION keeps the exact reviewed gates"
+  fi
+  # Patch with the newest reviewed manifest whose anchors this host proves.
+  MANIFEST_VERSION="$(python3 "$PAYLOAD_ROOT/patch/router_patch.py" --resolve-template \
+    --host "$PATCH_HOST" --backup "$PATCH_BACKUP" --manifest "$PAYLOAD_ROOT/patch/manifests" 2>/dev/null)" \
+    || fail_install "NO_TEMPLATE_MANIFEST" "no reviewed manifest's anchors all appear exactly once on this Bot computer's host; Grok Bot $GROK_VERSION needs a host probe (docs/VERSION-TRACKING.md)"
+  printf 'UNREVIEWED VERSION: Grok Bot %s is newer than every reviewed version; using the %s manifest with structural host verification (experimental opt-in).\n' \
+    "$GROK_VERSION" "$MANIFEST_VERSION"
+fi
+if ! python3 - "$PAYLOAD_ROOT/compatibility/supported-apps.json" "$MANIFEST_VERSION" <<'PY'
+import json, sys
+raise SystemExit(0 if sys.argv[2] in json.load(open(sys.argv[1]))["versions"] else 1)
+PY
+then
+  fail_install "UNSUPPORTED_VERSION" "This exact Grok Bot version is unsupported"
+fi
 for required in \
   "$PAYLOAD_ROOT/runtime/run-provider.mjs" \
   "$PAYLOAD_ROOT/runtime/openrouter-catalog.mjs" \
@@ -185,10 +246,11 @@ for required in \
   "$PAYLOAD_ROOT/runtime/package-lock.json" \
   "$PAYLOAD_ROOT/runtime/provider.default.json" \
   "$PAYLOAD_ROOT/patch/router_patch.py" \
-  "$PAYLOAD_ROOT/patch/manifests/0.30.0.json" \
-  "$PAYLOAD_ROOT/patch/manifests/0.44.0.json" \
-  "$PAYLOAD_ROOT/compatibility/0.30.0-hosts.json" \
-  "$PAYLOAD_ROOT/compatibility/0.30.0-hosts.json.sig" \
+  "$PAYLOAD_ROOT/patch/previous/upstream-beta46.py" \
+  "$PAYLOAD_ROOT/patch/previous/upstream-beta47.py" \
+  "$PAYLOAD_ROOT/patch/previous/fork-7190a9e.py" \
+  "$PAYLOAD_ROOT/patch/manifests/$MANIFEST_VERSION.json" \
+  "$PAYLOAD_ROOT/compatibility/supported-apps.json" \
   "$PAYLOAD_ROOT/compatibility/registry-public-key.pem" \
   "$PAYLOAD_ROOT/remote/grokbot-router" \
   "$PAYLOAD_ROOT/remote/grokbot-router-watchdog" \
@@ -213,12 +275,11 @@ cp "$PAYLOAD_ROOT/runtime/model-catalog.mjs" "$STAGE_ROOT/model-catalog.mjs"
 cp "$PAYLOAD_ROOT/runtime/package.json" "$STAGE_ROOT/package.json"
 cp "$PAYLOAD_ROOT/runtime/package-lock.json" "$STAGE_ROOT/package-lock.json"
 cp "$PAYLOAD_ROOT/runtime/provider.default.json" "$STAGE_ROOT/provider.json"
-mkdir -p "$STAGE_ROOT/patch/manifests" "$STAGE_ROOT/bin" "$STAGE_ROOT/skills" "$STAGE_ROOT/compatibility"
+mkdir -p "$STAGE_ROOT/patch/manifests" "$STAGE_ROOT/patch/previous" "$STAGE_ROOT/bin" "$STAGE_ROOT/skills" "$STAGE_ROOT/compatibility"
 cp "$PAYLOAD_ROOT/patch/router_patch.py" "$STAGE_ROOT/patch/router_patch.py"
-cp "$PAYLOAD_ROOT"/patch/manifests/*.json "$STAGE_ROOT/patch/manifests/"
-cp "$PAYLOAD_ROOT/compatibility/0.30.0-hosts.json" "$STAGE_ROOT/compatibility/0.30.0-hosts.json"
-cp "$PAYLOAD_ROOT/compatibility/0.30.0-hosts.json.sig" "$STAGE_ROOT/compatibility/0.30.0-hosts.json.sig"
-cp "$PAYLOAD_ROOT/compatibility/registry-public-key.pem" "$STAGE_ROOT/compatibility/registry-public-key.pem"
+cp "$PAYLOAD_ROOT/patch/previous/"*.py "$STAGE_ROOT/patch/previous/"
+cp "$PAYLOAD_ROOT/patch/manifests/"*.json "$STAGE_ROOT/patch/manifests/"
+cp "$PAYLOAD_ROOT/compatibility/"*.json "$PAYLOAD_ROOT/compatibility/"*.sig "$PAYLOAD_ROOT/compatibility/registry-public-key.pem" "$STAGE_ROOT/compatibility/"
 cp "$PAYLOAD_ROOT/remote/grokbot-router" "$STAGE_ROOT/bin/grokbot-router"
 cp "$PAYLOAD_ROOT/remote/grokbot-router-watchdog" "$STAGE_ROOT/bin/grokbot-router-watchdog"
 cp "$PAYLOAD_ROOT/remote/host-registry" "$STAGE_ROOT/bin/host-registry"
@@ -232,6 +293,8 @@ elif [[ -f "/home/box/sand-data/grok-sdk-runtime/provider.json" ]]; then
   cp "/home/box/sand-data/grok-sdk-runtime/provider.json" "$STAGE_ROOT/provider.json"
 fi
 
+ROUTER_GROK_VERSION="$GROK_VERSION" \
+ROUTER_TEMPLATE_MANIFEST_VERSION="$([[ "$ALLOW_UNREVIEWED_VERSION" == "1" ]] && printf '%s' "$MANIFEST_VERSION")" \
 ROUTER_CONFIG_PATH="$STAGE_ROOT/provider.json" \
 ROUTER_DEFAULT_CONFIG_PATH="$PAYLOAD_ROOT/runtime/provider.default.json" \
 ROUTER_INSTALL_ROOT="$INSTALL_ROOT" \
@@ -260,6 +323,16 @@ try:
 except Exception:
     config = {}
 defaults = json.loads(defaults_path.read_text())
+config["grokBotVersion"] = os.environ["ROUTER_GROK_VERSION"]
+# Management tools patch an opted-in unreviewed version with its recorded
+# reviewed template; a reviewed install must drop any earlier opt-in.
+template_version = os.environ["ROUTER_TEMPLATE_MANIFEST_VERSION"]
+if template_version:
+    config["unreviewedVersion"] = True
+    config["templateManifestVersion"] = template_version
+else:
+    config.pop("unreviewedVersion", None)
+    config.pop("templateManifestVersion", None)
 install_root = os.environ["ROUTER_INSTALL_ROOT"]
 provider = os.environ["ROUTER_PROVIDER"]
 known_providers = set(os.environ["ROUTER_KNOWN_PROVIDERS"].split())
@@ -397,6 +470,23 @@ path.chmod(0o600)
 PY
 fi
 
+# Runtime replacement must retain Bot selections, provider threads, durable
+# delivery receipts, and the redacted audit. Temporary files and process locks
+# belong to the previous process generation and must not survive the swap.
+python3 - "$INSTALL_ROOT" "$STAGE_ROOT" <<'PYSTATE'
+from pathlib import Path
+import shutil, sys
+source, destination = map(Path, sys.argv[1:])
+for name in ("conversation-states.json", "audit.jsonl", "audit.jsonl.1"):
+    existing = source / name
+    if existing.is_file():
+        shutil.copy2(existing, destination / name)
+existing = source / "conversation-states"
+if existing.is_dir():
+    shutil.copytree(existing, destination / "conversation-states",
+                    ignore=shutil.ignore_patterns("*.lock", "*.tmp"))
+PYSTATE
+
 emit_phase "ACTIVATE_RUNTIME"
 printf '[4/6] Activating runtime atomically\n'
 if [[ -e "$INSTALL_ROOT" ]]; then
@@ -417,9 +507,7 @@ rollback_runtime() {
 
 emit_phase "APPLY_ADAPTER"
 printf '[5/6] Applying version-gated host adapter\n'
-PATCH_HOST="${ROUTER_PATCH_HOST:-/home/box/sand-host/host-main.cjs}"
-PATCH_BACKUP="${ROUTER_PATCH_BACKUP:-/home/box/sand-data/grokbot-router-backup/host-main.cjs.stock}"
-PATCH_MANIFEST="${ROUTER_PATCH_MANIFEST:-$INSTALL_ROOT/patch/manifests}"
+PATCH_MANIFEST="${ROUTER_PATCH_MANIFEST:-$INSTALL_ROOT/patch/manifests/$MANIFEST_VERSION.json}"
 PATCH_ARGS=(
   --host "$PATCH_HOST"
   --backup "$PATCH_BACKUP"
@@ -428,6 +516,9 @@ PATCH_ARGS=(
 )
 if [[ "${ROUTER_ALLOW_UNKNOWN_HOST:-0}" == "1" ]]; then
   PATCH_ARGS+=(--allow-unknown-host)
+fi
+if [[ "$ALLOW_UNREVIEWED_VERSION" == "1" ]]; then
+  PATCH_ARGS+=(--unreviewed-version "$GROK_VERSION")
 fi
 ACTIVE_REGISTRY=""
 if CACHED_REGISTRY="$("$INSTALL_ROOT/bin/host-registry" verify 2>/dev/null || true)" && [[ -n "$CACHED_REGISTRY" ]]; then
@@ -441,6 +532,12 @@ run_adapter_patch() {
   fi
 }
 if ! ADAPTER_OUTPUT="$(run_adapter_patch 2>&1)"; then
+  if [[ "$ALLOW_UNREVIEWED_VERSION" == "1" ]]; then
+    # No signed registry exists for an unreviewed version.
+    printf '%s\n' "$ADAPTER_OUTPUT" >&2
+    rollback_runtime
+    fail_install "UNREVIEWED_HOST_REJECTED" "This Bot computer's host did not pass structural verification for unreviewed Grok Bot $GROK_VERSION, so nothing was patched. Copy safe diagnostics; the complete host fingerprint is included."
+  fi
   printf 'The bundled compatibility list did not recognize this Bot computer. Checking for a signed update…\n'
   if UPDATED_REGISTRY="$("$INSTALL_ROOT/bin/host-registry" refresh 2>/dev/null || true)" && [[ -n "$UPDATED_REGISTRY" ]]; then
     ACTIVE_REGISTRY="$UPDATED_REGISTRY"
@@ -452,16 +549,15 @@ if ! ADAPTER_OUTPUT="$(run_adapter_patch 2>&1)"; then
   fi
 fi
 printf '%s\n' "$ADAPTER_OUTPUT"
-# Tell the desktop installer which trust tier accepted this host. A host that
-# is not on the exact signed list can still be accepted when it carries no
-# router marker, matches every source anchor exactly once, and passes the
-# read-only patch plus node --check. The untouched host is backed up first.
+# Structural diagnostics authorize a host only for an explicitly opted-in
+# unreviewed newer version. Otherwise only the exact reviewed hash/size pair
+# is accepted.
 case "$ADAPTER_OUTPUT" in
-  *'"stockTrust": "anchor-verified"'*)
-    printf 'Host accepted by structural verification (anchor-verified stock host); stock backup saved.\n'
-    ;;
   *'"stockTrust": "exact-allowlist"'*)
     printf 'Host accepted from the exact signed compatibility list; stock backup saved.\n'
+    ;;
+  *'"stockTrust": "unreviewed-anchor-verified"'*)
+    printf 'UNREVIEWED VERSION: host accepted by structural verification for Grok Bot %s (experimental); stock backup saved.\n' "$GROK_VERSION"
     ;;
 esac
 
@@ -547,6 +643,10 @@ printf '\nGROKBOT_ROUTER_INSTALL_OK\n'
 printf 'Version: %s\n' "$ROUTER_VERSION"
 printf 'Default provider: %s\n' "$DEFAULT_PROVIDER"
 printf 'Enabled providers: %s\n' "$ENABLED_PROVIDERS"
+if [[ "$ALLOW_UNREVIEWED_VERSION" == "1" ]]; then
+  printf 'UNREVIEWED VERSION: Grok Bot %s runs on the %s manifest with structural host verification (experimental).\n' \
+    "$GROK_VERSION" "$MANIFEST_VERSION"
+fi
 if [[ "$ENABLED_PROVIDERS" == *codex* ]]; then
   printf 'Next: run grokbot-router auth codex, then complete the device sign-in.\n'
 fi

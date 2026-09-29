@@ -20,17 +20,23 @@ YouTube-ready files:
 
 ## What happens during installation
 
-The native macOS installer—and the source-preview Windows shell built around the same payload—is a guided delivery mechanism. It does not replace the Grok Bot app.
+The native macOS installer—and the preview Windows installer built around the same payload—is a guided delivery mechanism. It does not replace the Grok Bot app. On both platforms a source installer (`scripts/install-macos.sh`, or `scripts/install-windows.ps1` on Windows 10/11) downloads the pinned tag and builds the installer app locally; the Windows one needs Node.js 22.12+ and Git for Windows, which it names but never installs.
 
-1. It confirms that the installed desktop app is the supported Grok Bot 0.30.0 build.
+1. It confirms that the installed desktop app is an official, vendor-signed Grok Bot whose exact version is listed in `compatibility/supported-apps.json` (0.30.0, 0.36.0, 0.44.0). Each listed version has its own manifest and signed host registry; a match on one version never authorizes another. A version newer than all of them is refused unless the user checked **Allow unreviewed Grok Bot version (experimental)**. Older or in-between versions are always refused.
 2. It restarts Grok Bot with a temporary diagnostic connection bound only to `127.0.0.1` on the local computer.
 3. It opens an existing Bot computer and verifies that its Terminal is really focused before typing anything.
 4. It transfers a small compressed payload through Grok's own remote-computer connection. The payload is checked with SHA-256 before extraction.
-5. Inside the Bot computer, it installs pinned runtime dependencies and verifies the stock host. A host is accepted from the exact signed hash-and-byte-count list, or by structural verification: no router marker, every source anchor exactly once, a read-only patch that passes `node --check`, and a plausible file size. Grok rotates 0.30.0 host builds often, so the structural path is what most installs use. The untouched host is saved under persistent `sand-data` storage before it is patched.
-6. It injects one narrow executor into the known host. The larger provider logic remains in a separate runtime that can be replaced or removed independently.
-7. It restarts the Grok host, verifies a real success marker, closes the diagnostic connection and reopens Grok Bot normally.
+5. Inside the Bot computer, it installs pinned runtime dependencies and selects the manifest for that exact desktop version. For a reviewed version it requires an exact reviewed stock-host SHA-256 and byte count from the bundled manifest or that version's Ed25519-signed registry. Every source anchor and each of the three patch seams (group member dispatch, memory extraction, episode summary) must match exactly once, and the transformed code must pass `node --check`. Structural similarity alone never authenticates a reviewed version's host. The untouched original is stored under persistent `sand-data` before patching.
+6. It installs the narrow provider adapter. The runtime recognizes Grok's existing completion identity when returning child results to the parent. The larger provider logic remains in a separate runtime that can be replaced or removed independently.
+7. It verifies the payload success marker and native command registration, then restarts the Grok host, verifies the restart receipt, closes the diagnostic connection and reopens Grok Bot normally.
 
-If the app version, source anchors, payload checksum, registry signature, Terminal focus or generated code does not match expectations, installation stops rather than guessing. A rejected host produces a safe fingerprint, the read-only syntax result, the trust tier, and the reason; Grok host source is never uploaded. The Bot terminal is read back through screenshot OCR, so installer attempt IDs use only characters OCR does not confuse, and the completion timeout restarts whenever a new phase is observed.
+If the app version, source anchors, payload checksum, registry signature, Terminal focus or generated code does not match expectations, installation stops rather than guessing. A rejected host produces a safe fingerprint, the anchor and patch-seam counts (`ANCHORS`, `PATCHANCHORS`), the read-only syntax result (`PATCHDRYRUN`), the trust tier, and the reason; Grok host source is never uploaded. The Bot terminal is read back through screenshot OCR, so installer attempt IDs use only characters OCR does not confuse, and the completion timeout restarts whenever a new phase is observed.
+
+### An unreviewed, newer Grok Bot
+
+With the experimental checkbox on and a version newer than every reviewed one, there is no reviewed hash to compare. The Bot computer instead uses the newest reviewed manifest whose anchors all appear exactly once on the live host and checks the host structurally: no router marker, every anchor and patch seam exactly once, a read-only patch that passes `node --check`, and a size inside that manifest's band. It backs up the untouched host first. Doctor then reports `HOSTTRUST=UNREVIEWED-ANCHOR-VERIFIED` and an `UNREVIEWED VERSION` line. If anything moved, installation stops before changing anything.
+
+This is weaker than a reviewed version. Structural checks cannot prove the backup is genuine stock code, so the option is off by default and never used for a reviewed version. **Restore Stock Grok Bot** returns the backed-up host.
 
 ## What happens when you send a message
 
@@ -52,13 +58,13 @@ Commands such as `/models`, `/provider`, `/doctor`, and `/router doctor` are han
 ### A tool turn
 
 1. Grok may include tool definitions with the turn.
-2. The router translates those exact schemas into the format expected by Codex SDK or OpenRouter.
+2. The router translates those exact schemas into the format the selected provider expects.
 3. The selected AI may return a structured request for one of those tools.
 4. Grok performs the action and applies its normal permission behavior.
 5. The matching result returns to the same provider thread.
 6. Only then does the provider produce the final chat answer.
 
-The router will not execute a provider's printed imitation of a tool call when Grok supplied no matching schema. The latest OpenRouter Shell gate had zero actionable host schemas, so the request correctly remained inert. Computer, Screenshot and sub-agent parity are therefore not current beta.38 claims even though the bridge and automated contracts exist.
+The router will not execute a provider's printed imitation of a tool call when Grok supplied no matching schema. The latest OpenRouter Shell gate had zero actionable host schemas, so the request correctly remained inert. Computer, Screenshot and sub-agent parity are therefore not blanket current-release claims even though the bridge and automated contracts exist.
 
 ## What stays, what changes
 
@@ -96,9 +102,15 @@ Read [SECURITY.md](../SECURITY.md) for the security boundary and [ARCHITECTURE.m
 - **Restore Stock Grok Bot** copies the SHA-256-verified persistent backup over the routed host, disables routing and restarts the host after the installer sees the restore marker.
 - `grokbot-router disable` leaves the adapter installed but sends new sessions down the stock path.
 - `grokbot-router enable` turns routing back on.
-- A future Grok Bot version is unsupported until its exact host is inspected, its hash and anchors are added, and the complete automated plus fresh-Bot live gate passes.
+- A newer Grok Bot version is not reviewed until its exact host is probed inside a Bot computer, its hash and anchors are added and signed, and the complete automated plus fresh-Bot live gate passes. See [VERSION-TRACKING.md](VERSION-TRACKING.md).
 
-The exact beta.38 artifact completed install, verified restore, reinstall and a post-cycle fresh-Bot proof. See [TEST-MATRIX.md](TEST-MATRIX.md) for the evidence rather than relying on the diagram as a test claim.
+The latest recorded complete Mac lifecycle is upstream beta.47 on 0.30.0 and 0.36.0. The beta.48 candidate, 0.44.0, and the unreviewed opt-in must pass their own live gate. See [TEST-MATRIX.md](TEST-MATRIX.md) for the evidence rather than relying on the diagram as a test claim.
+
+## How new models appear
+
+The router asks each provider for its current model list instead of relying only on a packaged shortlist: OpenRouter's public catalog, xAI's authenticated `/v1/models`, the Claude Agent SDK's `supportedModels()`, and the pinned Codex CLI's `codex debug models`. Each list is cached for one hour. If a provider cannot be reached, the router uses the cached copy, then the packaged list, so a discovery problem never breaks a chat turn. `/models refresh` asks again right away.
+
+Family names such as `/model sonnet`, `/model sol` or `/model grok` pick the newest model of that family in the cached list, so a new release is usable the day it appears without a GrokRouter update. A Bot keeps the model it has until you switch it.
 
 ## Suggested 55-second YouTube narration
 
@@ -109,3 +121,10 @@ The exact beta.38 artifact completed install, verified restore, reinstall and a 
 > The installer also checks the exact Grok version and saves a verified copy of the original host. So if I want to undo the whole thing, Restore Stock puts Grok's original inference path back.
 
 For the complete recording order and honest claim boundary, use [YOUTUBE-DEMO.md](YOUTUBE-DEMO.md).
+
+
+## Native memory tasks
+
+The chat executor also supplies Grok's memory-extraction and periodic episode-summary helpers. Each exact native call receives its own dedicated task marker: the selected Bot provider processes its original instructions without chat commands, cached tools, saved chat threads, or conversation/completion receipts. Results return directly to the host as text. Codex uses a separate read-only helper thread with network and web search disabled. Helper events are recorded separately from chat inference, without prompt or memory contents.
+
+Explicit native maintenance sessions (`isSummarizationSession`) retain the host's original inference implementation. Memory synthesis has a separate structured-text contract and is not routed through the chat response wrapper. This is an inference boundary, not a claim that all internal Grok work uses the selected chat provider.

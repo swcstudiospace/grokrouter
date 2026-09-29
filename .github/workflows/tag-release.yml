@@ -1,26 +1,39 @@
 name: Tag source release
 
-# Creates the annotated source tag that the README's pinned Terminal command
-# downloads. Run it from the Actions tab after the version bump has merged,
-# or opt in from a release commit by putting [tag-release] in the message of
-# the commit that lands on main. It refuses to tag a commit whose version
-# fields disagree with the requested version.
+# Creates the annotated source tag that the README's pinned macOS Terminal and
+# Windows PowerShell commands download. Run it from the Actions tab after the
+# version bump has merged, or opt in from a release commit by putting
+# [tag-release] in the message of the commit that lands on main. It refuses to
+# tag a commit whose version fields, installer source refs, or README commands
+# disagree with the requested version. Only the maintained repository tags:
+# the pinned commands download from swcstudiospace/grokrouter, so a tag pushed
+# anywhere else would publish nothing users can reach.
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version exactly as in package.json (for example 0.1.0-beta.46)"
+        description: "Release version exactly as in package.json (for example 0.1.0-beta.48)"
         required: true
         type: string
   push:
     branches: [main]
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: grokrouter-source-release
+  cancel-in-progress: false
 
 jobs:
+  verify:
+    if: github.repository == 'swcstudiospace/grokrouter' && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[tag-release]'))
+    uses: ./.github/workflows/ci.yml
   tag:
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[tag-release]')
+    needs: verify
+    permissions:
+      contents: write
+    if: github.repository == 'swcstudiospace/grokrouter' && (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[tag-release]'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -45,20 +58,15 @@ jobs:
             echo "Version '$REQUESTED' is not a valid release version" >&2
             exit 1
           fi
-          for file in package.json runtime/package.json installer-windows/package.json; do
-            actual="$(node -p "require('./$file').version")"
-            if [[ "$actual" != "$REQUESTED" ]]; then
-              echo "$file is $actual but $REQUESTED was requested" >&2
-              exit 1
-            fi
-          done
-          grep -Fq "SOURCE_REF=\"source-v$REQUESTED\"" scripts/install-macos.sh
-          grep -Fq "source-v$REQUESTED/scripts/install-macos.sh" README.md
+          node scripts/verify-release.mjs "$REQUESTED"
+          node scripts/verify-acceptance.mjs
           if git ls-remote --exit-code --tags origin "source-v$REQUESTED" >/dev/null 2>&1; then
-            echo "Tag source-v$REQUESTED already exists; nothing to do" >&2
-            exit 1
+            existing="$(git rev-list -n 1 "source-v$REQUESTED")"
+            [[ "$existing" == "$(git rev-parse HEAD)" ]] || { echo "Refusing to move an existing release tag" >&2; exit 1; }
+            echo "TAG_EXISTS=true" >> "$GITHUB_ENV"
           fi
       - name: Create and push the annotated source tag
+        if: env.TAG_EXISTS != 'true'
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"

@@ -9,7 +9,13 @@ import {
   freeModels,
   searchModels,
 } from "./openrouter-catalog.mjs";
-import { loadProviderModels, xaiSubscriptionModelIds } from "./model-catalog.mjs";
+import {
+  describeCatalog,
+  isValidModelId,
+  loadProviderModels,
+  newestFamilyModel,
+  xaiSubscriptionModelIds,
+} from "./model-catalog.mjs";
 import {
   XAI_API_BASE_URL,
   XAI_SUBSCRIPTION_BASE_URL,
@@ -24,13 +30,14 @@ const MAX_INPUT_BYTES = 50 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_IMAGES_PER_TURN = 4;
 const MAX_TOOLS = 128;
-const ROUTER_VERSION = "0.1.0-beta.46";
+const ROUTER_VERSION = "0.1.0-beta.48";
 const COMPLETED_TURN_TTL_MS = 15 * 60_000;
 const ACTIVE_TURN_TTL_MS = 15 * 60_000;
 const CHANNEL_CONTROL_LATCH_TTL_MS = 30_000;
 const INTERNAL_DELIVERY_TOOLS = new Set([
   "sendtouser",
   "sendmessage",
+  "send_message",
   "senduser",
   "reacttomessage",
   "update_state",
@@ -57,6 +64,16 @@ export function messageRole(message) {
   return typeof role === "string" ? role.toLowerCase() : "";
 }
 
+function hiddenCompletionContent(message) {
+  const content = message?.content ?? message?.message?.content ?? message?.data?.content;
+  const raw = collectText(content);
+  // The native host adds a timestamp and optional message-ID part, then wraps
+  // the actual hidden payload in user_query just like an ordinary user turn.
+  const queries = [...raw.matchAll(/<user_query>([\s\S]*?)<\/user_query>/gi)];
+  const text = (queries.length === 1 ? queries[0][1] : queries.length ? "" : raw).trim();
+  return /^\[SAND_HIDDEN_PROMPT\]/.test(text) ? text : "";
+}
+
 export function automationCompletionId(message) {
   const candidates = [
     message?.providerOptions?.cursor,
@@ -67,13 +84,24 @@ export function automationCompletionId(message) {
     const id = cursor?.sandAutomationCompletionId;
     if (typeof id === "string" && id.trim()) return id.trim();
   }
+  // Native child revival uses runner.run(hidden: true), separately from the
+  // automation inbox. The reviewed host preserves that run's requestId on the
+  // user message. Match its exact envelope and deduplicate by that durable ID;
+  // equal child output from another request remains a distinct completion.
+  if (messageRole(message) === "user"
+    && /^\[SAND_HIDDEN_PROMPT\]\s*\[A background task just completed\](?:\s|$)/.test(hiddenCompletionContent(message))) {
+    for (const cursor of candidates) {
+      const id = cursor?.requestId;
+      if (typeof id === "string" && id.trim()) return `grok-child-request:${id.trim()}`;
+    }
+  }
   return "";
 }
 
 export function automationCompletionText(message) {
   if (!automationCompletionId(message)) return "";
   const content = message?.content ?? message?.message?.content ?? message?.data?.content;
-  const text = collectText(content)
+  const text = (hiddenCompletionContent(message) || collectText(content))
     .replace(/^\s*\[SAND_HIDDEN_PROMPT\]\s*/i, "")
     .trim();
   return text || "Background task completed with no text output.";
@@ -137,6 +165,17 @@ export function latestUserText(messages) {
     if (text) return text;
   }
   return "";
+}
+
+function isAutomaticGreeting(messages) {
+  if (latestAutomationCompletion(messages) || toolResultCallIds(messages).size > 0) return false;
+  const latest = [...messages].reverse().find((message) => ["user", "human"].includes(messageRole(message)));
+  // The host also sends its procedure as a user-role context message. That
+  // context is not a human request and must not hide the explicit first run.
+  const requestId = latest?.providerOptions?.cursor?.requestId;
+  if (typeof requestId === "string" && requestId.trim()
+      && /^\[SAND_HIDDEN_PROMPT\]\[first run\](?:\s|$)/.test(hiddenCompletionContent(latest))) return true;
+  return !latestUserText(messages);
 }
 
 const ROUTER_CONTROL_PREFIX = /^\/(?:providers?|models?|reasoning|router|doctor)(?:\s|$)/i;
@@ -254,11 +293,30 @@ function controlProbe(messages) {
 
 const NATIVE_WORKFLOW_COMMAND_MARKER = /GROKROUTER_NATIVE_(?:COMMAND:\s*\/|CONTROL:\s*)(providers?|models?|reasoning|router|doctor)(?:\s|$)/ig;
 
+function expandedNativeSkillControlText(raw) {
+  // A menu selection is expanded by the verified desktop into a recipe plus
+  // its trailing mention. Match this complete wrapper, never a retained recipe
+  // elsewhere in the transcript or a command mentioned in ordinary prose.
+  const visible = extractUserQuery(raw).trim().replace(/^\[[^\]\n]+\]\s*/, "");
+  const wrapper = visible.match(/^The user invoked the "(providers?|models?|reasoning|router|doctor)" skill \(folder \1\)\. Run it now\.\r?\nWhat it does: [^\n]*\r?\nRecipe to follow:\r?\n([\s\S]+)\r?\nCarry out the recipe now, adapting it to anything else the user said in this message\.\s*\r?\n([\s\S]+)$/i);
+  if (!wrapper) return "";
+  const name = wrapper[1].toLowerCase();
+  const recipe = wrapper[2];
+  if (!/^# GrokRouter\b/m.test(recipe)) return "";
+  const markers = [...recipe.matchAll(NATIVE_WORKFLOW_COMMAND_MARKER)];
+  if (markers.length !== 1 || markers[0][1].toLowerCase() !== name) return "";
+  const invocation = wrapper[3].trim().match(new RegExp(`^[/@]?${name}(?:\\s+([^\\n]+))?$`, "i"));
+  if (!invocation) return "";
+  return `/${name}${invocation[1] ? ` ${invocation[1].trim()}` : ""}`;
+}
+
 export function hostRouterControlText(messages, sessionOptions = {}) {
   const raw = typeof sessionOptions.grokBotRouterControlText === "string"
     ? sessionOptions.grokBotRouterControlText
     : "";
   if (!raw.trim()) return "";
+  const expanded = expandedNativeSkillControlText(raw);
+  if (expanded) return expanded;
   const visible = extractUserQuery(raw).trim();
   if (!visible) return "";
   const addressed = addressedRouterControlText(visible);
@@ -268,7 +326,7 @@ export function hostRouterControlText(messages, sessionOptions = {}) {
   // transcript even though the composer visibly rendered `/provider codex`.
   // Accept that slashless form only when the matching registered workflow
   // marker is present. Ordinary prose never gains command authority here.
-  const bare = visible.match(/^(providers?|models?|reasoning|router|doctor)(?:\s+([\s\S]+))?$/i);
+  const bare = visible.match(/^@?(providers?|models?|reasoning|router|doctor)(?:\s+([\s\S]+))?$/i);
   if (!bare) return "";
   const commandName = bare[1].toLowerCase();
   const hasMatchingMarker = (Array.isArray(messages) ? messages : []).some((message) => {
@@ -285,6 +343,8 @@ export function nativeWorkflowControlText(messages) {
   for (let index = (Array.isArray(messages) ? messages.length : 0) - 1; index >= 0; index -= 1) {
     const message = messages[index];
     const raw = collectText(message?.content ?? message);
+    const expanded = expandedNativeSkillControlText(raw);
+    if (expanded) return expanded;
     const markers = [...raw.matchAll(NATIVE_WORKFLOW_COMMAND_MARKER)];
     if (markers.length === 0) {
       const role = messageRole(message);
@@ -294,8 +354,13 @@ export function nativeWorkflowControlText(messages) {
     const base = `/${markers[markers.length - 1][1].toLowerCase()}`;
     const commandName = base.slice(1);
     const visible = extractUserQuery(raw).trim();
-    const selected = visible.match(new RegExp(`^/?${commandName}(?:\\s+([\\s\\S]+))?$`, "i"));
-    if (!selected) return base;
+    const selected = visible.match(new RegExp(`^[/@]?${commandName}(?:\\s+([\\s\\S]+))?$`, "i"));
+    if (!selected) {
+      // A retained definition does not authorize a different visible request.
+      if (visible && visible !== raw.trim()) return "";
+      if (!/^# GrokRouter\b/.test(raw.trim())) return "";
+      return base;
+    }
     const argument = String(selected[1] || "").trim();
     return argument ? `${base} ${argument}` : base;
   }
@@ -366,12 +431,60 @@ export function automationContinuationSignature(messages) {
     }
   }
   return createHash("sha256")
-    .update([completion.id, ...toolResultIds].join("\0"))
+    .update([completion.id, ...toolResultIds, ...failedDeliveryReceiptIds(messages)].join("\0"))
     .digest("hex");
 }
 
 function latestInputBoundaryIndex(messages) {
   return Math.max(latestUserIndex(messages), latestAutomationCompletionIndex(messages));
+}
+
+function isDeliveryToolCall(call) {
+  const normalize = (name) => String(name || '').toLowerCase().replaceAll('_', '').replaceAll('-', '');
+  const deliveries = new Set(['sendtouser', 'sendmessage', 'senduser']);
+  const name = normalize(call.function?.name);
+  if (deliveries.has(name)) return true;
+  if (name !== 'calldynamictool') return false;
+  let args;
+  try { args = JSON.parse(call.function?.arguments || '{}'); } catch { return false; }
+  return deliveries.has(normalize(args?.toolName));
+}
+
+function failedToolResultCallIds(value, failures = new Set(), depth = 0, seen = new Set()) {
+  if (depth > 10 || value == null || typeof value !== "object" || seen.has(value)) return failures;
+  seen.add(value);
+  if (normalizedPartType(value) === "tool-result" && partToolCallId(value)) {
+    const outcome = value.result ?? value.output;
+    const hasError = (item) => item && typeof item === "object" && (
+      item.isError === true || item.is_error === true || item.success === false
+      || (item.error !== undefined && item.error !== null && item.error !== false)
+      || ["error-text", "error-json"].includes(item.type)
+    );
+    if (hasError(value) || hasError(outcome) || hasError(outcome?.value)) failures.add(partToolCallId(value));
+  }
+  for (const child of Array.isArray(value) ? value : Object.values(value)) {
+    failedToolResultCallIds(child, failures, depth + 1, seen);
+  }
+  return failures;
+}
+
+function failedDeliveryReceiptIds(messages) {
+  const boundary = latestInputBoundaryIndex(messages);
+  const deliveryCalls = new Set();
+  const failed = new Set();
+  for (let index = Math.max(0, boundary + 1); index < messages.length; index += 1) {
+    const message = messages[index];
+    if (messageRole(message) === "assistant") {
+      const content = message?.content ?? message?.message?.content ?? message?.data?.content;
+      for (const call of toolCallsFromGrokContent(content)) {
+        if (isDeliveryToolCall(call)) deliveryCalls.add(call.id);
+      }
+    }
+    for (const id of failedToolResultCallIds(message)) {
+      if (deliveryCalls.has(id)) failed.add(id);
+    }
+  }
+  return [...failed].sort();
 }
 
 export function hasDeliveryAfterLatestQuery(messages) {
@@ -388,7 +501,7 @@ export function hasDeliveryAfterLatestQuery(messages) {
       ?? messages[index]?.message?.content
       ?? messages[index]?.data?.content;
     for (const call of toolCallsFromGrokContent(content)) {
-      if (INTERNAL_DELIVERY_TOOLS.has(String(call.function?.name || "").toLowerCase())) {
+      if (isDeliveryToolCall(call)) {
         sendCallOrigins.set(call.id, index);
       }
     }
@@ -397,7 +510,9 @@ export function hasDeliveryAfterLatestQuery(messages) {
   for (let index = startIndex; index < messages.length; index += 1) {
     const message = messages[index];
     const resultIds = toolResultCallIds(message);
+    const failedResultIds = failedToolResultCallIds(message);
     if ([...resultIds].some((id) => {
+      if (failedResultIds.has(id)) return false;
       const origin = sendCallOrigins.get(id);
       if (origin !== undefined) return queryIndex < 0 || origin > queryIndex;
       // A transcript with no visible input boundary can contain only the
@@ -411,13 +526,13 @@ export function hasDeliveryAfterLatestQuery(messages) {
     if (messageRole(message) !== "assistant") continue;
     const content = message?.content ?? message?.message?.content ?? message?.data?.content;
     for (const call of toolCallsFromGrokContent(content)) {
-      if (!INTERNAL_DELIVERY_TOOLS.has(String(call.function?.name || "").toLowerCase())) {
+      if (!isDeliveryToolCall(call)) {
         pendingToolCalls.add(call.id);
       }
     }
     const parts = Array.isArray(content) ? content : [content];
     const visibleText = parts
-      .filter((part) => !["reasoning", "redacted-reasoning", "reasoning-details"].includes(normalizedPartType(part)))
+      .filter((part) => !["reasoning", "redacted-reasoning", "reasoning-details", "tool-call", "tool-result"].includes(normalizedPartType(part)))
       .map((part) => collectText(part))
       .filter(Boolean)
       .join("\n")
@@ -830,6 +945,57 @@ async function openRouterToolResults(message) {
   return converted;
 }
 
+function pendingBackgroundAgentIds(messages) {
+  const boundary = latestInputBoundaryIndex(messages);
+  const launches = new Set();
+  const pending = new Set();
+  const orchestrationName = (name) => /^(?:task|sub[ _-]?agent|launch[ _-]?subagent|spawn[ _-]?agent)$/i.test(String(name || ""));
+  const backgroundId = (value, depth = 0) => {
+    if (depth > 8 || value == null) return null;
+    if (typeof value === "string") {
+      // The native Task broker renders its launch object into this exact
+      // protocol receipt. Accept it only inside a paired orchestration result;
+      // quoted user text and other tools never reach this branch with authority.
+      const receipt = value.trim().match(/^<cursor_untrusted_data_(\d+) source="Task">\nSubagent is running in the background\.\n\nAgent ID: (sand-subagent-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) \(can be used with the `resume` parameter to send a follow-up after it completes\)\n<\/cursor_untrusted_data_\1>$/);
+      if (receipt) return receipt[2];
+      try { return backgroundId(JSON.parse(value), depth + 1); } catch { return null; }
+    }
+    if (typeof value !== "object" || value.success === false || value.isError === true || value.error) return null;
+    if (value.isBackgrounded === true && typeof value.agentId === "string" && value.agentId.startsWith("sand-subagent-")) return value.agentId;
+    for (const key of ["success", "result", "output", "value"]) {
+      const id = backgroundId(value[key], depth + 1);
+      if (id) return id;
+    }
+    return null;
+  };
+  for (const message of messages.slice(Math.max(0, boundary + 1))) {
+    if (messageRole(message) === "assistant") {
+      const content = message?.content ?? message?.message?.content ?? message?.data?.content;
+      for (const call of toolCallsFromGrokContent(content)) {
+        let name = call.function?.name;
+        if (/^calldynamictool$/i.test(name)) {
+          try { name = JSON.parse(call.function.arguments).toolName; } catch { continue; }
+        }
+        if (orchestrationName(name)) launches.add(call.id);
+      }
+    }
+    // Read the authoritative structured result, not its provider rendering.
+    // Grok may also attach experimental_content with a duplicate text view;
+    // concatenating both produces invalid JSON and loses the native receipt.
+    const inspectResults = (value, depth = 0) => {
+      if (depth > 10 || value == null || typeof value !== "object") return;
+      if (normalizedPartType(value) === "tool-result" && launches.has(partToolCallId(value))) {
+        const id = backgroundId(value.result ?? value.output);
+        if (id) pending.add(id);
+        return;
+      }
+      for (const child of Array.isArray(value) ? value : Object.values(value)) inspectResults(child, depth + 1);
+    };
+    inspectResults(message);
+  }
+  return [...pending];
+}
+
 function sanitizeOpenRouterConversation(messages) {
   const assistantCallIds = new Set();
   const toolResultIds = new Set();
@@ -1202,6 +1368,34 @@ async function persistedOpenRouterKey(config) {
   throw new Error("OpenRouter needs OPENROUTER_API_KEY in Grok Bot's Secrets store");
 }
 
+function isLiteralTextOnlyRequest(text) {
+  // Formatting the result of a task does not make its prerequisite work text-only.
+  // Only unambiguous standalone literal requests may remove the offered tools.
+  return /^(?:please\s+)?(?:reply|respond|answer)\s+with\s+exactly\s+(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|[^\s]+)(?:\s+and\s+nothing\s+else)?[.!]?\s*$/i.test(text.trim());
+}
+
+function unwrapLiteralDeliveryText(text, request) {
+  const literal = request.trim().match(/^(?:please\s+)?(?:reply|respond|answer)\s+with\s+exactly\s+("[^"\n]+"|'[^'\n]+'|`[^`\n]+`|[^\s]+)(?:\s+and\s+nothing\s+else)?[.!]?\s*$/i)?.[1];
+  if (!literal) return text;
+  const expected = /^["'`]/.test(literal) ? literal.slice(1, -1) : literal;
+  // Decode only a complete delivery envelope containing the exact requested
+  // literal. This is plain-text normalization, never an executable tool call.
+  const marker = text.match(/^\s*(?:```[^\n]*\n)?to=functions\.(SendToUser|CallDynamicTool)\b[^{}]{0,320}(?=\{)/i);
+  if (!marker) return text;
+  const json = balancedJsonObject(text, marker[0].length);
+  if (!json || !/^\s*(?:```)?\s*$/.test(text.slice(marker[0].length + json.length))) return text;
+  try {
+    const envelope = JSON.parse(json);
+    const brokered = marker[1].toLowerCase() === "calldynamictool";
+    if (brokered && (envelope?.namespace !== "cursor" || envelope.toolName !== "SendToUser"
+        || !Object.keys(envelope).every(key => ["namespace", "toolName", "arguments"].includes(key)))) return text;
+    const value = brokered ? envelope.arguments : envelope;
+    if (value?.type === "text" && value.content === expected
+        && Object.keys(value).every(key => ["type", "content"].includes(key))) return expected;
+  } catch {}
+  return text;
+}
+
 export async function runOpenRouter(config, messages, tools, fetchImpl = fetch) {
   const apiKey = await persistedOpenRouterKey(config);
   return runOpenAICompatible(config, messages, tools, fetchImpl, {
@@ -1248,11 +1442,9 @@ async function runOpenAICompatible(config, messages, tools, fetchImpl, transport
   const normalizedTools = normalizeTools(tools).map((tool) => ({ type: "function", function: tool }));
   const convertedMessages = await openRouterMessages(messages);
   const visibleUserText = latestUserText(messages);
-  const directTextOnly = /\b(?:reply|respond|answer)\s+with\s+exactly\b/i.test(visibleUserText);
-  const automaticGreeting = !visibleUserText
-    && !latestAutomationCompletion(messages)
-    && toolResultCallIds(messages).size === 0;
-  let offeredTools = directTextOnly || automaticGreeting ? [] : normalizedTools;
+  const directTextOnly = isLiteralTextOnlyRequest(visibleUserText);
+  const automaticGreeting = isAutomaticGreeting(messages);
+  let offeredTools = config.nativeTextTask || directTextOnly || automaticGreeting ? [] : normalizedTools;
   // A model with no native tool support answers a tools request with a 400 or
   // silently ignores it. Drop the schemas up front and let the guarded textual
   // recovery handle the turn instead of burning a failed request.
@@ -1284,7 +1476,7 @@ async function runOpenAICompatible(config, messages, tools, fetchImpl, transport
   const requiresTool = explicitToolRequest || Boolean(subagentOrchestrationTool);
   const body = {
     model,
-    messages: [
+    messages: config.nativeTextTask ? convertedMessages : [
       {
         role: "system",
         content: [
@@ -1292,7 +1484,9 @@ async function runOpenAICompatible(config, messages, tools, fetchImpl, transport
           `The router control plane reports that the active provider is ${label} and the active model is ${model}.`,
           "The in-chat commands /provider, /models, /model, /reasoning, and /router are real and are handled before model inference.",
           "If asked which provider or model is active, use these router facts. Never deny or invent router commands.",
-          "Use an outer Grok tool only when the user's task actually requires it. A literal or exact-text reply must be answered directly without tools.",
+          "Use an outer Grok tool only when the user's task actually requires it. A standalone literal or exact-text reply must be answered directly without tools. A final-format instruction does not remove prerequisite tool work or delegation; complete that work before formatting the answer.",
+          "Return your final answer to this conversation directly as content; the router delivers it. Do not discover or call a message-delivery tool merely to send that final answer.",
+          "A task receipt with isBackgrounded=true proves only that a child is running. Never infer its result. Continue other required tool work, then wait for the actual background-completion message before delivering the result.",
           ...(offeredTools.length ? [
             `The only Grok tools available in this turn are: ${offeredTools.map((tool) => tool.function.name).join(", ")}.`,
             "Invoke an available tool only through the API's native tool-calling field. Never print or narrate tool-call markup such as to=functions, code:, or JSON arguments as assistant text.",
@@ -1395,12 +1589,13 @@ async function runOpenAICompatible(config, messages, tools, fetchImpl, transport
     }
     const message = payload?.choices?.[0]?.message;
     if (!message) throw new Error(`${label} returned no completion choice`);
-    const text = typeof message.content === "string"
+    const rawText = typeof message.content === "string"
       ? message.content.trim()
       : Array.isArray(message.content)
         ? message.content.map((part) => part?.text ?? "").filter(Boolean).join("\n").trim()
         : "";
-    const nativeToolCalls = parsedOpenRouterToolCalls(message.tool_calls ?? message.toolCalls);
+    const text = directTextOnly && !config.nativeTextTask ? unwrapLiteralDeliveryText(rawText, visibleUserText) : rawText;
+    const nativeToolCalls = config.nativeTextTask || directTextOnly || automaticGreeting ? [] : parsedOpenRouterToolCalls(message.tool_calls ?? message.toolCalls);
     const recoveredToolCalls = nativeToolCalls.length
       ? []
       : recoveredTextualOpenRouterToolCalls(text, offeredTools, visibleUserText);
@@ -1412,6 +1607,7 @@ async function runOpenAICompatible(config, messages, tools, fetchImpl, transport
       text: recoveredToolCalls.length ? "" : text,
       toolCalls: nativeToolCalls.length ? nativeToolCalls : recoveredToolCalls,
       recoveredTextualToolCall: recoveredToolCalls.length > 0,
+      normalizedLiteralDelivery: text !== rawText,
       ...(requiresTool ? {
         textualToolDiagnostics: {
           requestedTool: forcedTool?.function?.name || null,
@@ -1443,7 +1639,9 @@ async function runOpenAICompatible(config, messages, tools, fetchImpl, transport
         ...body.messages,
         {
           role: "user",
-          content: "The previous Grok tool round is complete. Return the final user-facing answer now. Do not repeat a completed tool call.",
+          content: config.nativeTextTask
+            ? "Return the text required by the original system instructions. Do not use tools or address the chat user."
+            : "The previous Grok tool round is complete. Return the final user-facing answer now. Do not repeat a completed tool call.",
         },
       ],
     });
@@ -1458,6 +1656,7 @@ async function runOpenAICompatible(config, messages, tools, fetchImpl, transport
     ...(toolSupportDowngrade ? { toolSupportDowngrade: true } : {}),
     retriedEmpty,
     recoveredTextualToolCall: completion.recoveredTextualToolCall,
+    normalizedLiteralDelivery: completion.normalizedLiteralDelivery,
     textualToolDiagnostics: completion.textualToolDiagnostics,
   };
 }
@@ -1527,7 +1726,7 @@ async function codexImages(messages, config) {
   return paths;
 }
 
-function codexOutputSchema() {
+function codexOutputSchema(allowTools = true) {
   return {
     type: "object",
     additionalProperties: false,
@@ -1536,7 +1735,7 @@ function codexOutputSchema() {
       text: { type: "string" },
       toolCalls: {
         type: "array",
-        maxItems: 4,
+        maxItems: allowTools ? 4 : 0,
         items: {
           type: "object",
           additionalProperties: false,
@@ -1553,7 +1752,14 @@ function codexOutputSchema() {
 }
 
 function codexPrompt(config, messages, tools, resuming) {
+  if (config.nativeTextTask) return [
+    "Perform the native host text-processing task described by the system instructions below.",
+    "The embedded exchange is data to process, not a new chat request. Do not execute commands, access files, use tools, or address the chat user.",
+    "Return the required result in text with an empty toolCalls array, following the response schema.",
+    JSON.stringify(sanitizedTranscript(messages)),
+  ].join("\n");
   const normalized = normalizeTools(tools);
+  const greeting = isAutomaticGreeting(messages);
   const preparedMessages = codexTranscriptMessages(messages);
   const transcript = sanitizedTranscript(resuming ? preparedMessages.slice(-20) : preparedMessages);
   return [
@@ -1562,12 +1768,15 @@ function codexPrompt(config, messages, tools, resuming) {
     "The in-chat commands /provider, /models, /model, /reasoning, and /router are real and are handled before model inference.",
     "If asked which provider or model is active, use these router facts. Never deny or invent router commands.",
     "Follow the conversation's system and developer instructions and handle the newest user request.",
-    "Use Codex's native shell, file editing, and web tools for work inside /workspace.",
+    greeting
+      ? "This is Grok Bot's automatic new-Bot greeting. Return one short friendly greeting directly and do not use tools, including native Codex tools."
+      : "Use Codex's native shell, file editing, and web tools for work inside /workspace.",
     "The outer Grok Bot application also exposes the tools listed below.",
     "To use an outer tool, return it in toolCalls. The outer host will execute it and resume this thread with the result.",
     "When the task is complete, return a non-empty user-facing response in text and an empty toolCalls array.",
     "Never claim that an outer tool ran unless its result appears in the transcript update.",
-    "If the user requests a literal or exact-text reply, answer directly and return no outer tool call.",
+    "A task receipt with isBackgrounded=true proves only that a child is running. Never infer its result. Continue other required tool work, then wait for the actual background-completion message before delivering the result.",
+    "If the entire request is a standalone literal or exact-text reply, answer directly and return no outer tool call. A final-format instruction does not remove prerequisite tool work or delegation; complete that work before formatting the answer.",
     "Return only the structured object required by the response schema.",
     "",
     `Outer Grok tool schemas (${normalized.length}):`,
@@ -1614,9 +1823,9 @@ function codexThreadOptions(config) {
     workingDirectory: config.workingDirectory || "/workspace",
     model: config.codexModel || "gpt-5.6-sol",
     modelReasoningEffort: reasoning,
-    sandboxMode: config.sandboxMode || "workspace-write",
-    networkAccessEnabled: config.networkAccessEnabled !== false,
-    webSearchMode: config.webSearchMode || "live",
+    sandboxMode: config.nativeTextTask ? "read-only" : config.sandboxMode || "workspace-write",
+    networkAccessEnabled: config.nativeTextTask ? false : config.networkAccessEnabled !== false,
+    webSearchMode: config.nativeTextTask ? "disabled" : config.webSearchMode || "live",
     approvalPolicy: config.approvalPolicy || "never",
     skipGitRepoCheck: true,
   };
@@ -1644,7 +1853,7 @@ async function createAnthropicQuery() {
 export async function runAnthropic(config, messages, tools, queryFactory = null) {
   const query = queryFactory ? queryFactory() : await createAnthropicQuery();
   const model = config.anthropicModel || "claude-sonnet-5";
-  const resuming = Boolean(config.anthropicSessionId);
+  const resuming = !config.nativeTextTask && Boolean(config.anthropicSessionId);
   const prompt = anthropicPrompt(config, messages, tools, resuming);
   const images = await codexImages(messages, config);
   const promptText = images.length
@@ -1658,6 +1867,8 @@ export async function runAnthropic(config, messages, tools, queryFactory = null)
     allowDangerouslySkipPermissions: true,
     ...(config.anthropicExecutablePath ? { pathToClaudeCodeExecutable: config.anthropicExecutablePath } : {}),
     ...(resuming ? { resume: config.anthropicSessionId } : {}),
+    // A native text task is data processing: no Claude Code tools, one turn.
+    ...(config.nativeTextTask ? { tools: [], maxTurns: 1 } : {}),
     env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: `grokrouter/${ROUTER_VERSION}` },
   };
   const run = async (runOptions) => {
@@ -1685,6 +1896,7 @@ export async function runAnthropic(config, messages, tools, queryFactory = null)
     outcome = await run(fresh);
   }
   const parsed = parseCodexResult(outcome.finalText);
+  if (config.nativeTextTask) parsed.toolCalls = [];
   if (!parsed.text && !parsed.toolCalls.length) throw new Error("Claude Agent SDK returned an empty response");
   return {
     ...parsed,
@@ -1705,12 +1917,15 @@ export async function runCodex(config, messages, tools, codexFactory = null) {
   // remote npm download at all.
   const codex = codexFactory ? codexFactory() : await createCodexClient(config);
   const options = codexThreadOptions(config);
-  let resuming = Boolean(config.codexThreadId);
+  const greeting = isAutomaticGreeting(messages);
+  const offeredTools = greeting || config.nativeTextTask ? [] : tools;
+  const outputSchema = codexOutputSchema(!greeting && !config.nativeTextTask);
+  let resuming = !config.nativeTextTask && Boolean(config.codexThreadId);
   let thread = resuming
     ? codex.resumeThread(config.codexThreadId, options)
     : codex.startThread(options);
   const makeInput = async () => {
-    const prompt = codexPrompt(config, messages, tools, resuming);
+    const prompt = codexPrompt(config, messages, offeredTools, resuming);
     const images = await codexImages(messages, config);
     return images.length
       ? [{ type: "text", text: prompt }, ...images.map((path) => ({ type: "local_image", path }))]
@@ -1718,20 +1933,48 @@ export async function runCodex(config, messages, tools, codexFactory = null) {
   };
   let turn;
   try {
-    turn = await thread.run(await makeInput(), { outputSchema: codexOutputSchema() });
+    turn = await thread.run(await makeInput(), { outputSchema });
   } catch (error) {
     if (!resuming) throw error;
     resuming = false;
     thread = codex.startThread(options);
-    turn = await thread.run(await makeInput(), { outputSchema: codexOutputSchema() });
+    turn = await thread.run(await makeInput(), { outputSchema });
   }
-  const parsed = parseCodexResult(turn.finalResponse);
-  if (!parsed.text && !parsed.toolCalls.length) throw new Error("Codex SDK returned an empty response");
+  let parsed = parseCodexResult(turn.finalResponse);
+  if (config.nativeTextTask) parsed.toolCalls = [];
+  // The schema forbids greeting tools. Keep that boundary even if a provider
+  // returns a malformed structured result instead of honoring maxItems.
+  if (greeting && parsed.toolCalls.length) {
+    parsed = { text: "Ready. What would you like me to work on?", toolCalls: [] };
+  }
+  let usage = normalizeUsage(turn.usage);
+  let retriedEmpty = false;
+  if (!parsed.text && !parsed.toolCalls.length) {
+    retriedEmpty = true;
+    // Stay on the same thread so completed native actions are not replayed.
+    turn = await thread.run(
+      config.nativeTextTask
+        ? "Return the text required by the original host system instructions with an empty toolCalls array. Do not use tools or address the chat user."
+        : greeting
+        ? "Return one short friendly greeting in text with an empty toolCalls array. Do not use any tools."
+        : "Your previous turn returned no answer or outer tool call. Continue from the actual results already in this thread. Do not repeat completed actions or claim a child launched without its real result. Return the required structured object with either the next necessary outer tool call or a non-empty final text answer.",
+      { outputSchema },
+    );
+    parsed = parseCodexResult(turn.finalResponse);
+    if (config.nativeTextTask) parsed.toolCalls = [];
+    if (greeting && parsed.toolCalls.length) {
+      parsed = { text: "Ready. What would you like me to work on?", toolCalls: [] };
+    }
+    const retriedUsage = normalizeUsage(turn.usage);
+    usage = Object.fromEntries(Object.entries(usage).map(([key, value]) => [key, value + retriedUsage[key]]));
+  }
   return {
     ...parsed,
-    usage: normalizeUsage(turn.usage),
+    usage,
     model: config.codexModel || "gpt-5.6-sol",
     threadId: thread.id,
+    ...(!parsed.text && !parsed.toolCalls.length ? { emptyResponse: true } : {}),
+    ...(retriedEmpty ? { retriedEmpty: true } : {}),
   };
 }
 
@@ -1768,6 +2011,7 @@ function auditMessageShape(message) {
   return {
     role: messageRole(message) || null,
     automationCompletion: Boolean(automationCompletionId(message)),
+    cursorKeys: Object.keys(message?.providerOptions?.cursor ?? message?.message?.providerOptions?.cursor ?? message?.data?.providerOptions?.cursor ?? {}).sort().slice(0, 20),
     keys: message && typeof message === "object" ? Object.keys(message).sort().slice(0, 20) : [],
     contentKind: Array.isArray(content) ? "array" : typeof content,
     parts: parts.slice(0, 12).map((part) => ({
@@ -2052,41 +2296,78 @@ async function appendAudit(config, event) {
   }
 }
 
-function channelControlLatchPath(config) {
-  return config.channelControlLatchPath || join(runtimeDirectory, "channel-control-latch.json");
+function channelControlKey(sessionOptions) {
+  const root = sessionOptions.lineage?.rootParentRequestId;
+  if (typeof root !== "string" && typeof root !== "number") return "";
+  if (!String(root).trim()) return "";
+  return createHash("sha256").update(String(root)).digest("hex");
 }
 
-async function channelControlLatch(config) {
-  try {
-    return JSON.parse(await readFile(channelControlLatchPath(config), "utf8"));
-  } catch {
-    return {};
-  }
+function nativeGroupControl(sessionOptions) {
+  const context = sessionOptions.grokBotRouterGroupContext;
+  const message = context?.message;
+  if (!context || typeof context.roomId !== "string" || !context.roomId
+      || typeof context.memberId !== "string" || !context.memberId
+      || typeof context.memberName !== "string" || !context.memberName
+      || message?.kind !== "message" || message.role !== "user"
+      || typeof message.id !== "string" || !message.id
+      || typeof message.content !== "string") return null;
+  const raw = message.content.trim();
+  const text = addressedRouterControlText(raw);
+  if (!ROUTER_CONTROL_PREFIX.test(text)) return null;
+  const prefix = raw.slice(0, raw.indexOf(text)).trim()
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\[(?:\/?)(?:mention|bot)[^\]]*\]/gi, " ")
+    .replace(/\uFFFC/g, " ").replace(/\s+/g, " ").trim();
+  const addressed = !prefix || prefix.toLowerCase() === `@${context.memberName}`.toLowerCase();
+  const id = createHash("sha256").update(JSON.stringify([context.roomId, message.id, context.memberId])).digest("hex");
+  return { text, addressed, id };
 }
 
-async function rememberChannelControl(config) {
+function channelControlLatchPath(config, sessionOptions) {
+  const key = channelControlKey(sessionOptions);
+  if (!key) return "";
+  const base = config.channelControlLatchPath || join(runtimeDirectory, "channel-control-latch.json");
+  return `${base}.${key}`;
+}
+
+async function rememberChannelControl(config, sessionOptions) {
+  const pathname = channelControlLatchPath(config, sessionOptions);
+  if (!pathname) return;
+  const temporary = `${pathname}.${randomUUID()}.tmp`;
   try {
-    const pathname = channelControlLatchPath(config);
-    const now = Date.now();
     await mkdir(dirname(pathname), { recursive: true });
-    await writeFile(pathname, JSON.stringify({ completedAt: now }), { mode: 0o600 });
+    await writeFile(temporary, JSON.stringify({ completedAt: Date.now() }), { mode: 0o600 });
+    await rename(temporary, pathname);
   } catch {
-    // A receipt latch improves channel hygiene but must never break a control.
+    // An unavailable receipt cannot break a deterministic control.
+  } finally {
+    await rm(temporary, { force: true }).catch(() => {});
   }
 }
 
-async function hasRecentChannelControl(config) {
-  const value = await channelControlLatch(config);
-  const completedAt = Number(value?.completedAt || 0);
-  return completedAt > 0 && Date.now() - completedAt < CHANNEL_CONTROL_LATCH_TTL_MS;
+async function hasRecentChannelControl(config, sessionOptions) {
+  const pathname = channelControlLatchPath(config, sessionOptions);
+  if (!pathname) return false;
+  try {
+    const value = JSON.parse(await readFile(pathname, "utf8"));
+    const age = Date.now() - Number(value?.completedAt || 0);
+    if (age >= 0 && age < CHANNEL_CONTROL_LATCH_TTL_MS) return true;
+    await rm(pathname, { force: true });
+  } catch {}
+  return false;
 }
 
 function isChannelControlFollowOn(sessionOptions) {
+  const groupMessage = sessionOptions.grokBotRouterGroupContext?.message;
+  if (groupMessage?.kind === "message" && groupMessage.role === "user"
+      && typeof groupMessage.id === "string" && groupMessage.id
+      && typeof groupMessage.content === "string") return false;
   const hasFreshRawUserText = typeof sessionOptions.grokBotRouterControlText === "string"
     && sessionOptions.grokBotRouterControlText.trim();
   return !hasFreshRawUserText
     && Object.prototype.hasOwnProperty.call(sessionOptions, "skipLabeling")
-    && typeof sessionOptions.lineage?.rootParentRequestId === "string";
+    && Boolean(channelControlKey(sessionOptions));
 }
 
 export const PROVIDERS = {
@@ -2108,15 +2389,15 @@ export const PROVIDERS = {
     fallbackModel: "anthropic/claude-sonnet-5",
     signIn: "paste an OpenRouter key in the GrokRouter installer",
     aliases: {
-      claude: "anthropic/claude-sonnet-5",
-      sonnet: "anthropic/claude-sonnet-5",
-      opus: "anthropic/claude-opus-5",
+      claude: "anthropic/claude-sonnet-5.5",
+      sonnet: "anthropic/claude-sonnet-5.5",
+      opus: "anthropic/claude-opus-5.5",
       haiku: "anthropic/claude-haiku-4.5",
       fable: "anthropic/claude-fable-5.1",
       gpt: "openai/gpt-6-astra",
       astra: "openai/gpt-6-astra",
       gemini: "google/gemini-3.8-flash",
-      grok: "x-ai/grok-4.6",
+      grok: "x-ai/grok-4.7",
       sol: "openai/gpt-5.6-sol",
       terra: "openai/gpt-5.6-terra",
       luna: "openai/gpt-5.6-luna",
@@ -2178,11 +2459,6 @@ function modelAliases(provider) {
   return providerSpec(provider).aliases;
 }
 
-function validModelId(provider, model) {
-  if (provider === "openrouter") return /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._:+-]*$/i.test(model);
-  return /^[a-z0-9][a-z0-9._:+-]*$/i.test(model);
-}
-
 async function doctorText(config, state) {
   const checks = [];
   checks.push(`Router ${ROUTER_VERSION}: OK`);
@@ -2217,6 +2493,15 @@ async function doctorText(config, state) {
       checks.push("Codex CLI: missing");
     }
   }
+  // Cache-only: doctor reports freshness without spawning discovery.
+  const catalogProviders = [...new Set([state.provider, ...(config.providers || [])])]
+    .filter((provider) => PROVIDER_IDS.includes(provider));
+  const freshness = [];
+  for (const provider of catalogProviders) {
+    const catalog = await loadProviderModels(provider, config, {}, { cacheOnly: true });
+    freshness.push(`${providerLabel(provider)} ${describeCatalog(catalog)} (${catalog.models.length})`);
+  }
+  checks.push(`Model catalogs: ${freshness.join("; ")}`);
   checks.push(formatFailures(await recentFailures(config, 3)));
   checks.push(`Grok tools: bridged on demand (${state.provider === "codex" || state.provider === "anthropic" ? "structured adapter" : "native function calls"})`);
   checks.push("Run a real computer and sub-agent parity test before treating those capabilities as verified for a model.");
@@ -2241,19 +2526,24 @@ async function controlResult(config, key, state, input, catalogDependencies = {}
   if (command === "/provider" || command === "/router" || command === "/router status") {
     return result(`${providerLabel(state.provider)} is active for this bot. Model: ${state.model}. Reasoning: ${state.reasoning}.`);
   }
+  if (command === "/reasoning") {
+    return result(`Reasoning effort: ${state.reasoning}. Change it with /reasoning minimal|low|medium|high|xhigh.`);
+  }
   if (command === "/router help" || command === "/providers") {
     return result([
       "GrokRouter controls:",
       "• /provider codex|openrouter|anthropic|xai — switch this bot",
       "• /provider — show active provider",
-      "• /models — list configured models",
+      "• /models — list this provider's models (live, cached, or packaged)",
       "• /models free — free OpenRouter models from the live catalog",
       "• /models all [page] — every OpenRouter model, paged",
       "• /models search <text> — search the OpenRouter catalog",
       "• /model <id> — switch this bot's model",
+      "• /model sonnet|opus|haiku|fable|sol|terra|luna|astra|grok — newest model in that family",
       "• /models <id> — also switches (forgiving alias)",
       "• paste any catalog vendor/model ID by itself — also switches",
       "• /reasoning minimal|low|medium|high|xhigh — change effort",
+      "• /reasoning — show current effort",
       "• /router reset — start a fresh provider thread",
       "• /router doctor — show installation health",
       "• /doctor — show the same installation health",
@@ -2301,7 +2591,14 @@ async function controlResult(config, key, state, input, catalogDependencies = {}
     const catalog = await loadProviderModels(state.provider, config, catalogDependencies, {
       force: mode === "refresh",
     });
+    // Discovery failures degrade to a fallback list; the audit keeps the reason.
+    const listed = (text) => {
+      const output = result(text);
+      if (catalog.error) output.catalogWarning = catalog.error;
+      return output;
+    };
     const footer = [
+      `Catalog: ${describeCatalog(catalog)}${catalog.error ? `; ${label} could not be refreshed` : ""}.`,
       `Current: ${state.model}. Reasoning: ${state.reasoning}.`,
       state.provider === "openrouter"
         ? "Switch: send /model <id>, /models <id>, or paste any catalog vendor/model ID by itself."
@@ -2311,55 +2608,55 @@ async function controlResult(config, key, state, input, catalogDependencies = {}
         : "Also: /models all, /models search <text>, /models refresh.",
     ];
     if (!catalog.models.length) {
-      return result([
+      return listed([
         `${label} models: the live list is unavailable right now.`,
         catalog.error ? `Reason: ${redactDiagnostic(catalog.error, 160)}` : "",
         `Switch anyway with /model <id>.`,
       ].filter(Boolean).join("\n"));
     }
-    const staleNote = catalog.stale
-      ? `\n(Showing the last known list; ${label} could not be reached.)`
-      : "";
     if (mode === "free") {
       const models = freeModels(catalog.models);
-      if (!models.length) return result("No free models are listed in the current OpenRouter catalog.");
-      return result([
+      if (!models.length) return listed("No free models are listed in the current OpenRouter catalog.");
+      return listed([
         formatModelPage(models, { title: "Free OpenRouter models", page: argument, moreCommand: "/models free" }),
         'Free models rotate and may have low rate limits; those marked "no tools" cannot use Grok tools natively.',
         ...footer,
-      ].join("\n") + staleNote);
+      ].join("\n"));
     }
     if (mode === "search") {
       if (!argument) return result("Send /models search <text> with a vendor or model name.");
       const models = searchModels(catalog.models, argument);
-      if (!models.length) return result(`No ${label} model matches “${argument}”. Try /models all.`);
-      return result([
+      if (!models.length) return listed(`No ${label} model matches “${argument}”. Try /models all.`);
+      return listed([
         formatModelPage(models, { title: `${label} models matching “${argument}”`, moreCommand: `/models search ${argument}` }),
         ...footer,
-      ].join("\n") + staleNote);
+      ].join("\n"));
     }
     // A bare /models shows the first page of the same live list, so no model
     // is hidden behind a packaged shortlist.
     const page = mode === "all" ? argument : "1";
-    return result([
+    return listed([
       formatModelPage(catalog.models, { title: `${label} models`, page, moreCommand: "/models all" }),
       ...footer,
-    ].join("\n") + staleNote);
+    ].join("\n"));
   }
   const modelMatch = normalized.match(/^\/models?\s+(.+)$/i);
   if (modelMatch) {
     const requested = modelMatch[1].trim();
-    const model = modelAliases(state.provider)[requested.toLowerCase()] || requested;
+    // Family aliases resolve against the cached catalog only, so a control
+    // stays offline; the pinned alias covers an empty or unmatched catalog.
+    const catalog = await loadProviderModels(state.provider, config, catalogDependencies, { cacheOnly: true });
+    const pinned = modelAliases(state.provider)[requested.toLowerCase()];
+    const model = pinned ? newestFamilyModel(state.provider, requested, catalog.models) || pinned : requested;
     if (!providerSpec(state.provider).openIds && !configuredModels(config, state.provider).includes(model)) {
       return result(`Unknown ${providerLabel(state.provider)} model “${requested}”. Use /models to see the supported models.`);
     }
-    if (!validModelId(state.provider, model)) {
+    if (!isValidModelId(state.provider, model)) {
       return result(state.provider === "openrouter"
         ? `Invalid OpenRouter model ID “${requested}”. Use vendor/model format.`
         : `Invalid ${providerLabel(state.provider)} model ID “${requested}”.`);
     }
     let note = "";
-    const catalog = await loadProviderModels(state.provider, config, catalogDependencies, { cacheOnly: true });
     const entry = findCatalogModel(catalog.models, model);
     if (catalog.models.length && !entry) {
       note = ` Note: this ID is not in the known ${providerLabel(state.provider)} model list, so requests may fail until it exists. Send /models refresh to update the list.`;
@@ -2385,7 +2682,7 @@ async function controlResult(config, key, state, input, catalogDependencies = {}
   // is not limited to the packaged shortlist. This stays offline: only the
   // cached catalog is consulted, and anything unrecognized still falls
   // through to the explicit-/model guidance below instead of inference.
-  if (state.provider === "openrouter" && validModelId("openrouter", normalized)) {
+  if (state.provider === "openrouter" && isValidModelId("openrouter", normalized)) {
     const catalog = await loadProviderModels(state.provider, config, catalogDependencies, { cacheOnly: true });
     const entry = findCatalogModel(catalog.models, normalized);
     if (entry) {
@@ -2435,15 +2732,6 @@ async function readStdin(limitBytes = MAX_INPUT_BYTES) {
   });
 }
 
-function transcriptHasToolCall(messages, names) {
-  const wanted = new Set((Array.isArray(names) ? names : [names]).map((name) => String(name).toLowerCase()));
-  return (Array.isArray(messages) ? messages : []).some((message) => {
-    const content = message?.content ?? message?.message?.content ?? message?.data?.content;
-    return toolCallsFromGrokContent(content)
-      .some((call) => wanted.has(String(call.function?.name || "").toLowerCase()));
-  });
-}
-
 function rewriteHostToolCallIds(toolCalls) {
   return (Array.isArray(toolCalls) ? toolCalls : []).map((call) => ({
     ...call,
@@ -2470,7 +2758,40 @@ export async function runTurn(input, dependencies = {}) {
   const tools = Array.isArray(input.tools) ? input.tools : [];
   const sessionOptions = input.sessionOptions && typeof input.sessionOptions === "object" ? input.sessionOptions : {};
   const { state, key, identity } = await stateForTurn(config, messages, sessionOptions);
-  const turnFingerprint = userTurnFingerprint(messages);
+  const nativeTextTask = ["memory-extraction", "episode-summary"].includes(sessionOptions.grokBotRouterTextTask)
+    ? sessionOptions.grokBotRouterTextTask : "";
+  if (nativeTextTask) {
+    // Every provider field carries the Bot's model so the helper runs on the
+    // Bot's own provider, never on a provider that may not be installed.
+    const taskConfig = {
+      ...config, nativeTextTask, codexThreadId: null, anthropicSessionId: null,
+      codexModel: state.model, codexReasoning: state.reasoning,
+      openRouterModel: state.model, openRouterReasoning: state.reasoning,
+      anthropicModel: state.model, anthropicReasoning: state.reasoning,
+      xaiModel: state.model, xaiReasoning: state.reasoning,
+      adapterSessionId: `${state.sessionId}:${nativeTextTask}`,
+    };
+    const receipt = { task: nativeTextTask, sessionId: state.sessionId, provider: state.provider, model: state.model, toolNames: [] };
+    await appendAudit(config, { event: "native_text_task_start", ...receipt });
+    try {
+      const output = await runProvider(state.provider, taskConfig, messages, [], dependencies);
+      if (output.emptyResponse) throw new Error("Native text task returned an empty response after one retry");
+      await appendAudit(config, { event: "native_text_task_ok", ...receipt });
+      // A helper never resumes or replaces the Bot's conversation thread,
+      // caches tools, handles controls, or claims a human/completion receipt.
+      return { ok: true, provider: state.provider, model: state.model, text: output.text, toolCalls: [], usage: output.usage };
+    } catch (error) {
+      await appendAudit(config, { event: "native_text_task_error", ...receipt, error: redactDiagnostic(error?.message || error) });
+      throw error;
+    }
+  }
+  const userFingerprint = userTurnFingerprint(messages);
+  const failedDeliveries = failedDeliveryReceiptIds(messages);
+  // A newly failed delivery reopens this input exactly once per durable
+  // receipt. Replays of the same failure still share the normal turn lock.
+  const turnFingerprint = userFingerprint && failedDeliveries.length
+    ? createHash("sha256").update([userFingerprint, "failed-delivery", ...failedDeliveries].join("\0")).digest("hex")
+    : userFingerprint;
   const automationContinuation = latestAutomationCompletionIndex(messages) > latestUserIndex(messages);
   const continuationSignature = automationContinuation
     ? automationContinuationSignature(messages)
@@ -2527,31 +2848,59 @@ export async function runTurn(input, dependencies = {}) {
       return suppressed("automation-continuation-already-claimed-or-processed");
     }
   }
-  if (!automationContinuation
-      && isChannelControlFollowOn(sessionOptions)
-      && await hasRecentChannelControl(config)) {
-    return suppressed("channel-control-follow-on");
+  const groupControl = automationContinuation ? null : nativeGroupControl(sessionOptions);
+  if (groupControl && !groupControl.addressed) {
+    return suppressed("channel-control-not-addressed");
+  }
+  let groupControlClaim = "";
+  if (groupControl) {
+    groupControlClaim = createHash("sha256").update(JSON.stringify([groupControl.id, failedDeliveries])).digest("hex");
+    let claimed = false;
+    const updated = await mutateState(config, key, state, (current) => {
+      const receipts = current.processedGroupControls || [];
+      if (receipts.includes(groupControlClaim)) return current;
+      claimed = true;
+      return { ...current, processedGroupControls: [...receipts, groupControlClaim].slice(-64) };
+    });
+    Object.assign(state, updated);
+    if (!claimed) return suppressed("channel-control-already-processed");
   }
   const latestVisibleControl = structuredRouterControlText(messages)
     || addressedRouterControlText(latestUserText(messages));
-  const controlText = hostRouterControlText(messages, sessionOptions)
-    || (ROUTER_CONTROL_PREFIX.test(latestVisibleControl) ? latestVisibleControl : "")
+  const explicitControl = groupControl?.text || hostRouterControlText(messages, sessionOptions)
+    || (ROUTER_CONTROL_PREFIX.test(latestVisibleControl) ? latestVisibleControl : "");
+  if (!automationContinuation
+      && !explicitControl
+      && isChannelControlFollowOn(sessionOptions)
+      && await hasRecentChannelControl(config, sessionOptions)) {
+    return suppressed("channel-control-follow-on");
+  }
+  const controlText = explicitControl
     || nativeWorkflowControlText(messages)
     || latestVisibleControl;
-  const control = automationContinuation
-    ? null
-    : await controlResult(config, key, state, controlText, dependencies);
+  let control;
+  try {
+    control = automationContinuation ? null : await controlResult(config, key, state, controlText, dependencies);
+  } catch (error) {
+    if (groupControlClaim) await mutateState(config, key, state, (current) => ({
+      ...current, processedGroupControls: (current.processedGroupControls || []).filter((id) => id !== groupControlClaim),
+    }));
+    throw error;
+  }
   if (control) {
-    await rememberChannelControl(config);
+    const { catalogWarning, ...visible } = control;
+    await rememberChannelControl(config, sessionOptions);
     await appendAudit(config, {
       event: "control_turn",
+      controlCommand: String(controlText || "").split(/\s+/, 1)[0],
       sessionId: state.sessionId,
       identitySource: identity.source,
       identityFields: identity.fields,
       provider: state.provider,
       model: state.model,
+      ...(catalogWarning ? { catalogWarning: redactDiagnostic(catalogWarning, 200) } : {}),
     });
-    return { ok: true, ...control };
+    return { ok: true, ...visible };
   }
   const completedTurnStillFresh = Number(state.completedTurnAt || 0) > 0
     && Date.now() - Number(state.completedTurnAt || 0) < COMPLETED_TURN_TTL_MS;
@@ -2589,6 +2938,7 @@ export async function runTurn(input, dependencies = {}) {
     Object.assign(state, updated);
   }
   const effectiveTools = toolsFromHost.length ? toolsFromHost : actionableTools(state.tools);
+  const pendingBackgroundIds = pendingBackgroundAgentIds(messages);
   const turnConfig = {
     ...config,
     provider: state.provider,
@@ -2632,15 +2982,10 @@ export async function runTurn(input, dependencies = {}) {
     result = await runProvider(state.provider, turnConfig, messages, effectiveTools, dependencies);
     if (result.emptyResponse) {
       const completion = latestAutomationCompletion(messages);
-      if (automationContinuation && completion?.text) {
+      if (pendingBackgroundIds.length) {
+        result = { ...result, text: "", emptyResponse: false };
+      } else if (automationContinuation && completion?.text) {
         result = { ...result, text: completion.text, emptyResponse: false, emptyRecovery: "automation-completion" };
-      } else if (transcriptHasToolCall(messages, "CallDynamicTool")) {
-        result = {
-          ...result,
-          text: "Background task launched. I’ll report its finished result when it arrives.",
-          emptyResponse: false,
-          emptyRecovery: "dynamic-task-wait",
-        };
       } else {
         throw new Error(`${providerLabel(state.provider)} returned an empty response after one retry`);
       }
@@ -2679,6 +3024,25 @@ export async function runTurn(input, dependencies = {}) {
     state.threadId = result.threadId;
     await saveThreadId(config, key, state.provider, state.model, result.threadId, threadEpoch);
   }
+  let waitingForBackground = false;
+  if (pendingBackgroundIds.length) {
+    const remainingCalls = (result.toolCalls || []).filter((call) => !isDeliveryToolCall({
+      function: { name: call.toolName, arguments: jsonString(call.args || {}) },
+    }));
+    if (result.text || remainingCalls.length !== (result.toolCalls || []).length || !remainingCalls.length) {
+      result = { ...result, text: "", toolCalls: remainingCalls };
+      waitingForBackground = !remainingCalls.length;
+      if (waitingForBackground) {
+        // Grok requires an acknowledgement for the originating user request.
+        // Silence causes its ack-redrive recovery to retry that request even
+        // after a separate child-completion request has delivered the result.
+        // This fixed acknowledgement is justified by the paired launch receipt;
+        // it never forwards the provider's unverified result or delivery call.
+        result.text = "Sub-agent started. I’ll wait for its actual result.";
+      }
+      if (!waitingForBackground) await suppressed("background-delivery-deferred-while-tools-continue");
+    }
+  }
   if (continuationSignature) {
     const updated = await mutateState(config, key, state, (current) => {
       const claims = { ...(current.automationContinuationClaims || {}) };
@@ -2712,6 +3076,9 @@ export async function runTurn(input, dependencies = {}) {
     });
     Object.assign(state, updated);
   }
+  if (waitingForBackground) {
+    await suppressed("background-task-awaiting-completion");
+  }
   await recordToolLinks(config, key, result.toolCalls);
   await appendAudit(config, {
     event: "turn_ok",
@@ -2723,9 +3090,11 @@ export async function runTurn(input, dependencies = {}) {
     toolNames: (result.toolCalls || []).map((call) => call.toolName).filter(Boolean),
     toolCallIds: (result.toolCalls || []).map((call) => call.toolCallId).filter(Boolean),
     ...(result.emptyRecovery ? { emptyRecovery: result.emptyRecovery } : {}),
+    ...(result.retriedEmpty ? { retriedEmpty: true } : {}),
     ...(result.recoveredTextualToolCall ? { recoveredTextualToolCall: true } : {}),
     ...(result.droppedOptionalKeys?.length ? { droppedOptionalKeys: result.droppedOptionalKeys } : {}),
     ...(result.toolSupportDowngrade ? { toolSupportDowngrade: true } : {}),
+    ...(result.normalizedLiteralDelivery ? { normalizedLiteralDelivery: true } : {}),
     ...(result.textualToolDiagnostics ? { textualToolDiagnostics: result.textualToolDiagnostics } : {}),
   });
   const {
@@ -2735,6 +3104,7 @@ export async function runTurn(input, dependencies = {}) {
     retriedEmpty: _retriedEmpty,
     emptyRecovery: _emptyRecovery,
     recoveredTextualToolCall: _recoveredTextualToolCall,
+    normalizedLiteralDelivery: _normalizedLiteralDelivery,
     textualToolDiagnostics: _textualToolDiagnostics,
     ...publicResult
   } = result;

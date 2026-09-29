@@ -1,6 +1,53 @@
-# GrokRouter 0.1.0-beta.46
+# GrokRouter 0.1.0-beta.48 — maintained fork (candidate)
 
-Installs on rotating Grok Bot 0.30.0 host builds without a per-hash approval, and adds two providers plus the full OpenRouter catalog.
+First release candidate from the maintained fork `swcstudiospace/grokrouter`. Pending live acceptance; the tag `source-v0.1.0-beta.48` is created only after the acceptance record passes.
+
+- **Upstream beta.47 merged.** Adds Grok Bot 0.36.0, exact reviewed stock-host trust for every reviewed version, previous-adapter reconstruction, hardened host recovery, and beta.47's child-completion, broker-delivery, memory/episode isolation, and Doctor fixes. Every fork feature is kept.
+- **Grok Bot 0.44.0 under exact per-version gates.** 0.44.0 is listed in `compatibility/supported-apps.json` with its own manifest and signed host registry, from a live 2026-09-07 probe. It is a reviewed host with live acceptance pending: beta.47's three patch seams have not yet been proven on a live 0.44.0 probe.
+- **Experimental opt-in for unreviewed Grok Bot versions.** Both installers have **Allow unreviewed Grok Bot version (experimental)**, off by default. It applies only to a version strictly newer than every reviewed one (for example 0.61.0). The host is accepted by structural verification only (no router marker, every anchor and patch seam exactly once, `node --check`, size band), backed up first, and reported as `HOSTTRUST=UNREVIEWED-ANCHOR-VERIFIED` with an `UNREVIEWED VERSION` line. A moved anchor stops the install before any change with a `PATCHANCHORS=`/`PATCHDRYRUN=` report. Restore Stock returns the backed-up host. Structural checks cannot prove that backup is genuine stock.
+- **New registry signing key.** The fork signs host registries with its own Ed25519 key (`compatibility/registry-public-key.pem`); all three registries are re-signed and upstream signatures are no longer trusted. Registry refresh downloads from this repository. Maintainers sign locally; the private key never enters the repository or CI.
+- **Live Codex model discovery.** Codex lists models through the pinned CLI's `codex debug models` (account refresh, then its bundled catalog), joining OpenRouter, xAI, and Anthropic discovery. Lists are cached for an hour with a live → cache → packaged fallback. The `/models` footer shows catalog freshness and `/router doctor` shows it per provider.
+- **Newest-family aliases.** `/model sonnet|opus|haiku|fable|sol|terra|luna|astra|grok` resolves to the newest model in that family in the cached catalog, with pinned fallbacks. New models need no GrokRouter release.
+- **Editable installer model fields.** Type any well-formed model ID (strictly validated) or pick a suggestion, including `anthropic/claude-sonnet-5.5` and `anthropic/claude-opus-5.5`.
+- **Native Windows PowerShell source installer.** `scripts/install-windows.ps1` and **Install GrokRouter.cmd** build GrokRouter locally from the tagged source for Windows 10/11 x64 or Arm64, install per-user without admin rights, and keep one previous install. Node.js 22.12+ and Git for Windows are named with `winget` commands but never auto-installed. CI now parses it and runs it twice.
+- **Install commands from this fork.** Both README commands and both source installers pin `swcstudiospace/grokrouter` at `source-v0.1.0-beta.48`; `scripts/verify-release.mjs` enforces that they match.
+- **Upgrades authenticated.** Installing over upstream beta.45, beta.46, or beta.47, or an earlier fork build, reconstructs the existing adapter byte-for-byte before using the stock backup. Per-Bot state, threads, and audit history are preserved.
+
+## Not yet verified live
+
+- Fresh-Bot acceptance of this candidate on 0.30.0 and 0.36.0.
+- A live 0.44.0 probe proving the three beta.47 patch seams, and 0.44.0 fresh-Bot acceptance.
+- A reviewed host probe for 0.58.0, 0.59.1, or 0.61.0.
+- The unreviewed-version opt-in on a live Bot computer.
+- Windows native install, restore, and fresh-Bot acceptance; the new Windows CI smoke has not run yet.
+- Live Codex account catalog refresh; Anthropic and xAI provider runs; live registry refresh with the new key.
+
+See [the verification matrix](docs/TEST-MATRIX.md).
+
+# GrokRouter 0.1.0-beta.47 — source prerelease
+
+- Restores exact reviewed host hash and byte-count verification. Structural diagnostics cannot authenticate a stock host.
+- Rejects an unknown or foreign live host even when a trusted old backup exists. Automatic repair cannot silently replace a newer incompatible host.
+- Reconstructs supported published adapters from trusted originals before upgrading. Doctor now detects tampered adapter contents, not just marker presence.
+- Scopes channel-control receipts to the originating host request and keeps fresh commands ahead of follow-on suppression. Unrelated conversations remain independent.
+- Keeps an unrelated explicit user query from being replaced by a retained workflow definition.
+- Adds separately gated official Grok Bot 0.36.0 compatibility, version-specific signed registries, and macOS vendor-signature verification.
+- Parses expanded native skill-menu invocations and preserves per-Bot settings, saved threads, receipts, and audit history during runtime replacement.
+- Makes the native Reasoning entry show the current effort when invoked without an argument.
+- Repairs brokered delivery detection, failed-delivery recovery, parent/child completion, Codex empty-response recovery, and management Doctor exit status.
+- Returns one normal tool-free new-Bot greeting, keeps standalone literal replies tool-free, and normalizes verified printed delivery envelopes only when they contain the exact requested text.
+- Acknowledges a verified background launch once and waits for its actual finished-child result before delivering the answer.
+- Isolates native memory extraction and periodic episode summaries from chat tools, saved threads, and delivery receipts. Explicit native maintenance sessions retain Grok's original backend.
+- Gives native command registration time to load its workflow library while keeping ordinary diagnostic requests bounded.
+- Builds Windows packages with the Electron version pinned in their manifest.
+- Makes source tagging depend on CI and a versioned acceptance record tied to the candidate's source digest. Keeps the existing download link until the new tag is available.
+- Adds CodeQL analysis, release validation tests, and clearer compatibility/recovery documentation.
+
+The unchanged final Mac artifact passed all seven required live gates independently on official Grok Bot 0.30.0 and 0.36.0. Codex Sol and OpenRouter Claude completed real computer tools and returned actual native child results once. Upstream published the `source-v0.1.0-beta.47` tag September 9, 2026, after the protected release workflow passed; this fork merged it into beta.48. Windows remains a source preview; 0.44.0 and unreviewed host hashes remain unsupported in beta.47. Provider/helper limitations and exact receipts are recorded in [the verification matrix](docs/TEST-MATRIX.md).
+
+# Maintained fork changes after beta.46
+
+These shipped on `swcstudiospace/grokrouter` before upstream beta.47 was merged in. Where they conflicted with beta.47, beta.47's exact-host trust policy wins: rotating hosts are no longer accepted by structural verification alone.
 
 - **Grok Bot releases now draft their own support PR.** The daily version watch can hand a new Grok Bot version to a self-hosted GitHub Actions runner that lives inside a dedicated, never-patched Bot computer. `scripts/auto-probe.py` probes a copy of that live host and accepts it only when the host is stock, is not an already-shipped build, names the new version, and carries the patcher's existing anchors exactly once. It then proves install and restore on the copy with the real patcher. When all of that holds, **Ingest host probe** opens a draft PR and runs CI on it. Anything else is explained once on the tracking issue. Anchors are never guessed, and support is still claimed only after the live fresh-Bot gate. The runner is opt-in (`GROKBOT_PROBE_RUNNER=true`); see `docs/VERSION-TRACKING.md`. The desktop DMG does not contain the Bot-computer host, which is why a GitHub-hosted runner cannot do this.
 - **Fixed: Windows CI was red on every push since the xAI provider landed.** The xAI credential test asserted POSIX `0600` permissions, which Windows does not have. The owner-only check still runs everywhere else, including the Linux Bot computer where the runtime actually stores the token.
@@ -17,6 +64,12 @@ Installs on rotating Grok Bot 0.30.0 host builds without a per-hash approval, an
 - **xAI provider.** `/provider xai` routes a Bot through a SuperGrok or X Premium+ subscription using xAI's public device-code sign-in. **Start xAI Sign-in** prints a link and code; tokens are stored owner-only, refreshed automatically, and only ever sent to xAI hosts.
 - The installers, `remote/install.sh`, and `grokbot-router` accept `anthropic` and `xai` alongside `codex` and `openrouter`. OpenRouter/xAI-only setups still need no dependency download; Codex or Anthropic installs the pinned SDKs.
 - These provider rows are automated-pass, live-pending in `docs/TEST-MATRIX.md` until a fresh-Bot acceptance run records them.
+
+# GrokRouter 0.1.0-beta.46
+
+Historical notes below describe beta.46's released policy. The maintenance review did not authenticate every reported host as stock; structural checks did not establish that provenance. Beta.47 restores exact reviewed verification and fixes the unsafe backup fallback.
+
+Installs on rotating Grok Bot 0.30.0 host builds without a per-hash approval.
 
 - Public issues #1 through #5 all failed the same way: a genuine stock Bot-computer host whose SHA-256 was not yet on the signed list. At least seven distinct 0.30.0 host hashes were reported in one day, so an exact allowlist cannot keep up.
 - The host adapter now has a second acceptance tier, **structural verification**: the host carries no GrokRouter, legacy, or other-router marker; every required source anchor appears exactly once; a read-only patch passes `node --check`; and the byte count is within the manifest's band (20–40 MB). The exact signed list still runs first. Both tiers back up the untouched host before patching, and the backup now follows the live stock variant so Restore returns exactly what was running.

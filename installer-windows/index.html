@@ -12,7 +12,7 @@
       <header class="hero">
         <img class="mascot" src="assets/grokrouter-mascot.png" alt="GrokRouter mascot" />
         <div>
-          <div class="eyebrow">GROK BOT 0.30.0 <span>•</span> WINDOWS</div>
+          <div class="eyebrow">GROK BOT 0.30 / 0.36 / 0.44 <span>•</span> WINDOWS</div>
           <h1>Bring your own model.</h1>
           <p>Keep Grok Bot’s interface, computer, files and tools. Route each Bot through Codex, OpenRouter, Anthropic, or xAI, then switch models from the normal chat composer.</p>
         </div>
@@ -33,13 +33,17 @@
           <label for="defaultProvider">Default provider</label>
           <select id="defaultProvider"><option value="codex">Codex SDK</option><option value="openrouter">OpenRouter</option><option value="anthropic">Anthropic</option><option value="xai">xAI</option></select>
           <label for="codexModel">Codex model</label>
-          <select id="codexModel"><option>gpt-6-astra</option><option>gpt-6-astra-pro</option><option>gpt-5.6-sol</option><option>gpt-5.6-sol-pro</option><option>gpt-5.6-terra</option><option>gpt-5.6-luna</option></select>
+          <input id="codexModel" list="codexModelSuggestions" autocomplete="off" spellcheck="false" value="gpt-6-astra" />
+          <datalist id="codexModelSuggestions"><option value="gpt-6-astra"></option><option value="gpt-6-astra-pro"></option><option value="gpt-5.6-sol"></option><option value="gpt-5.6-sol-pro"></option><option value="gpt-5.6-terra"></option><option value="gpt-5.6-luna"></option></datalist>
           <label for="openRouterModel">OpenRouter model</label>
-          <select id="openRouterModel"><option>anthropic/claude-sonnet-5</option><option>anthropic/claude-opus-5</option><option>anthropic/claude-fable-5.1</option><option>anthropic/claude-haiku-4.5</option><option>openai/gpt-6-astra</option><option>openai/gpt-5.6-luna</option><option>x-ai/grok-4.6</option><option>google/gemini-3.8-flash</option><option>moonshotai/kimi-k3</option><option>deepseek/deepseek-v4-pro</option><option>openrouter/free</option></select>
+          <input id="openRouterModel" list="openRouterModelSuggestions" autocomplete="off" spellcheck="false" value="anthropic/claude-sonnet-5.5" />
+          <datalist id="openRouterModelSuggestions"><option value="anthropic/claude-sonnet-5.5"></option><option value="anthropic/claude-opus-5.5"></option><option value="anthropic/claude-sonnet-5"></option><option value="anthropic/claude-opus-5"></option><option value="anthropic/claude-fable-5.1"></option><option value="anthropic/claude-haiku-4.5"></option><option value="openai/gpt-6-astra"></option><option value="openai/gpt-5.6-luna"></option><option value="x-ai/grok-4.6"></option><option value="google/gemini-3.8-flash"></option><option value="moonshotai/kimi-k3"></option><option value="deepseek/deepseek-v4-pro"></option><option value="openrouter/free"></option></datalist>
           <label for="anthropicModel">Anthropic model</label>
-          <select id="anthropicModel"><option>claude-sonnet-5</option><option>claude-opus-5</option><option>claude-haiku-4-5</option><option>claude-fable-5-1</option></select>
+          <input id="anthropicModel" list="anthropicModelSuggestions" autocomplete="off" spellcheck="false" value="claude-sonnet-5" />
+          <datalist id="anthropicModelSuggestions"><option value="claude-sonnet-5"></option><option value="claude-opus-5"></option><option value="claude-haiku-4-5"></option><option value="claude-fable-5-1"></option></datalist>
           <label for="xaiModel">xAI model</label>
-          <select id="xaiModel"><option>grok-4.6</option><option>grok-4.5</option><option>grok-4.3</option><option>grok-build-0.1</option><option>grok-4.20</option><option>grok-4.20-multi-agent</option></select>
+          <input id="xaiModel" list="xaiModelSuggestions" autocomplete="off" spellcheck="false" value="grok-4.6" />
+          <datalist id="xaiModelSuggestions"><option value="grok-4.6"></option><option value="grok-4.5"></option><option value="grok-4.3"></option><option value="grok-build-0.1"></option><option value="grok-4.20"></option><option value="grok-4.20-multi-agent"></option></datalist>
           <label for="openRouterKey">OpenRouter key</label>
           <input id="openRouterKey" type="password" autocomplete="off" spellcheck="false" placeholder="Stored only in Grok Bot Secrets" />
         </div>
@@ -54,6 +58,8 @@
           <p>Keep Grok Bot visible. If asked, select any Bot and open its Computer. Grok Bot restarts briefly while the installer verifies and reconnects it.</p>
           <button id="install" class="primary">Install Router</button>
         </div>
+        <label class="unreviewed"><input id="allowUnreviewedVersion" type="checkbox" /> <span>Allow unreviewed Grok Bot version (experimental)</span></label>
+        <p class="unreviewed-warning">Only for a Grok Bot newer than every reviewed version. The Bot host is accepted by structural checks instead of a reviewed hash; Restore Stock stays available.</p>
         <div class="tools-label">TOOLS</div>
         <div class="tools">
           <button data-action="auth">Codex sign-in</button>
@@ -72,7 +78,7 @@
 
       <div class="status-card"><span id="spinner" class="spinner hidden"></span><span id="status">Ready. Grok Bot will restart during installation.</span></div>
       <div class="activity-label">ACTIVITY</div>
-      <pre id="activity">The installer will verify the signed Grok Bot 0.30.0 Windows app, create a stock backup, install the pinned runtime, and test the result.
+      <pre id="activity">The installer will verify a supported, signed Grok Bot Windows app, create a stock backup, install the pinned runtime, and test the result.
 </pre>
     </main>
     <script src="renderer.js"></script>

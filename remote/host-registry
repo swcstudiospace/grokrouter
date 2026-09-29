@@ -10,30 +10,103 @@ while [[ -L "$SCRIPT_SOURCE" ]]; do
   fi
 done
 INSTALL_ROOT="$(cd -P "$(dirname "$SCRIPT_SOURCE")/.." && pwd)"
+# Prints "<version> <manifest version> <unreviewed version or ->". A reviewed
+# version is patched with its own manifest. An unreviewed newer version the
+# installer explicitly opted into is patched with its recorded reviewed
+# template manifest and structural trust; it never has a signed registry.
+VERSION_FIELDS="$(python3 - "$INSTALL_ROOT/provider.json" "$INSTALL_ROOT/compatibility/supported-apps.json" "$INSTALL_ROOT/patch/router_patch.py" <<'PYV'
+import importlib.util, json, os, re, sys
+from pathlib import Path
+try:
+    config = json.load(open(sys.argv[1]))
+except FileNotFoundError:
+    config = {}
+versions = json.load(open(sys.argv[2]))["versions"]
+version = config.get("grokBotVersion")
+if version is None:
+    # Installs from before exact desktop-version binding recorded no version.
+    # Select the manifest the live host or its stock backup proves: exact stock
+    # hash first, then anchors, newest version first.
+    try:
+        spec = importlib.util.spec_from_file_location("router_patch", sys.argv[3])
+        patcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(patcher)
+        version = patcher.resolve_manifest(
+            patcher.DEFAULT_MANIFEST,
+            Path(os.environ.get("ROUTER_PATCH_HOST") or patcher.DEFAULT_HOST),
+            Path(os.environ.get("ROUTER_PATCH_BACKUP") or patcher.DEFAULT_BACKUP),
+        )["grokBotVersion"]
+    except Exception as error:
+        raise SystemExit(f"Grok Bot version is not recorded and could not be resolved: {error}")
+if version in versions:
+    # A reviewed version keeps its exact gates even if an older opt-in remains.
+    print(version, version, "-")
+    raise SystemExit(0)
+key = lambda value: tuple(int(part) for part in value.split("."))
+template = config.get("templateManifestVersion")
+if (
+    config.get("unreviewedVersion") is True
+    and isinstance(version, str)
+    and re.fullmatch(r"\d+\.\d+\.\d+", version)
+    and all(key(version) > key(item) for item in versions)
+    and template in versions
+):
+    print(version, template, version)
+    raise SystemExit(0)
+raise SystemExit("Configured Grok Bot version is unsupported")
+PYV
+)"
+read -r GROK_VERSION MANIFEST_VERSION UNREVIEWED_VERSION <<< "$VERSION_FIELDS"
+if [[ "$UNREVIEWED_VERSION" == "-" ]]; then
+  UNREVIEWED_VERSION=""
+fi
 REGISTRY_ROOT="${ROUTER_HOST_REGISTRY_ROOT:-/home/box/sand-data/grokbot-router-compatibility}"
-REGISTRY_PATH="$REGISTRY_ROOT/0.30.0-hosts.json"
-SIGNATURE_PATH="$REGISTRY_ROOT/0.30.0-hosts.json.sig"
-BUNDLED_REGISTRY_PATH="$INSTALL_ROOT/compatibility/0.30.0-hosts.json"
-BUNDLED_SIGNATURE_PATH="$INSTALL_ROOT/compatibility/0.30.0-hosts.json.sig"
+REGISTRY_PATH="$REGISTRY_ROOT/${GROK_VERSION}-hosts.json"
+SIGNATURE_PATH="$REGISTRY_ROOT/${GROK_VERSION}-hosts.json.sig"
+BUNDLED_REGISTRY_PATH="$INSTALL_ROOT/compatibility/${GROK_VERSION}-hosts.json"
+BUNDLED_SIGNATURE_PATH="$INSTALL_ROOT/compatibility/${GROK_VERSION}-hosts.json.sig"
 PUBLIC_KEY="$INSTALL_ROOT/compatibility/registry-public-key.pem"
 VERIFIER="$INSTALL_ROOT/bin/verify-host-registry.mjs"
-OFFICIAL_REGISTRY_URL="https://raw.githubusercontent.com/promptadvisers/grokrouter/main/compatibility/0.30.0-hosts.json"
-OFFICIAL_SIGNATURE_URL="https://raw.githubusercontent.com/promptadvisers/grokrouter/main/compatibility/0.30.0-hosts.json.sig"
+OFFICIAL_REGISTRY_URL="https://raw.githubusercontent.com/swcstudiospace/grokrouter/main/compatibility/${GROK_VERSION}-hosts.json"
+OFFICIAL_SIGNATURE_URL="https://raw.githubusercontent.com/swcstudiospace/grokrouter/main/compatibility/${GROK_VERSION}-hosts.json.sig"
 
 verify_registry() {
-  node "$VERIFIER" "$1" "$2" "$PUBLIC_KEY" >/dev/null
+  node "$VERIFIER" "$1" "$2" "$PUBLIC_KEY" "$GROK_VERSION" >/dev/null
 }
 
 case "${1:-verify}" in
+  version)
+    printf '%s\n' "$GROK_VERSION"
+    ;;
+  patch-args)
+    # One router_patch.py argument per line for management callers.
+    printf '%s\n' --manifest "${ROUTER_PATCH_MANIFEST:-$INSTALL_ROOT/patch/manifests/$MANIFEST_VERSION.json}"
+    if [[ -n "$UNREVIEWED_VERSION" ]]; then
+      printf '%s\n' --unreviewed-version "$UNREVIEWED_VERSION"
+    fi
+    ;;
   verify)
+    if [[ -n "$UNREVIEWED_VERSION" ]]; then
+      # Expected, not a failure: callers simply run without a registry.
+      printf 'No signed host registry applies to unreviewed Grok Bot %s; its host is checked structurally instead.\n' "$UNREVIEWED_VERSION" >&2
+      exit 0
+    fi
     if verify_registry "$REGISTRY_PATH" "$SIGNATURE_PATH" 2>/dev/null; then
       printf '%s\n' "$REGISTRY_PATH"
+    elif [[ ! -f "$BUNDLED_REGISTRY_PATH" ]]; then
+      # Only the manifest's exact stock-host list applies to this version.
+      printf 'No signed host registry is published for Grok Bot %s.\n' "$GROK_VERSION" >&2
+      exit 1
     else
       verify_registry "$BUNDLED_REGISTRY_PATH" "$BUNDLED_SIGNATURE_PATH"
       printf '%s\n' "$BUNDLED_REGISTRY_PATH"
     fi
     ;;
   refresh)
+    if [[ -n "$UNREVIEWED_VERSION" ]]; then
+      printf 'No signed host registry is published for unreviewed Grok Bot %s.\n' "$UNREVIEWED_VERSION" >&2
+      exit 1
+    fi
     if ! command -v curl >/dev/null 2>&1; then
       printf 'No compatibility update was downloaded because curl is unavailable.\n' >&2
       exit 1
@@ -61,7 +134,7 @@ case "${1:-verify}" in
     printf '%s\n' "$REGISTRY_PATH"
     ;;
   *)
-    printf 'Usage: host-registry verify|refresh\n' >&2
+    printf 'Usage: host-registry version|patch-args|verify|refresh\n' >&2
     exit 2
     ;;
 esac

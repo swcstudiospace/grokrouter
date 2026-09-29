@@ -71,7 +71,7 @@ rm -rf "$BUILD_ROOT/windows/GrokRouter-win32-$ARCH"
   GrokRouter \
   --platform=win32 \
   --arch="$ARCH" \
-  --electron-version=40.10.6 \
+  --electron-version="$(cd "$STAGE_ROOT" && node -p "require('./package.json').devDependencies.electron")" \
   --app-version="$VERSION" \
   --icon="$STAGE_ROOT/assets/AppIcon.ico" \
   --no-asar \
@@ -94,6 +94,12 @@ if [[ -n "${ROUTER_WINDOWS_SIGN_PFX:-}" ]]; then
     powershell.exe -NoLogo -NoProfile -NonInteractive \
       -ExecutionPolicy Bypass \
       -File "$(cygpath -w "$PROJECT_ROOT/scripts/sign-windows.ps1")"
+fi
+# The source installer only needs the unpacked app; archiving it would add
+# minutes of Compress-Archive time for nothing.
+if [[ "${ROUTER_BUILD_APP_ONLY:-0}" == "1" ]]; then
+  printf '%s\n' "$APP_ROOT"
+  exit 0
 fi
 ZIP_PATH="$BUILD_ROOT/grokrouter-${VERSION}-windows-${ARCH}.zip"
 rm -f "$ZIP_PATH" "$ZIP_PATH.sha256"

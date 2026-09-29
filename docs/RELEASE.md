@@ -1,57 +1,61 @@
-# Source-build release procedure
+# Source release procedure
 
-GrokRouter is distributed as public source for Apple silicon Macs. Viewers build the native app locally instead of downloading an unsigned binary. The canonical repository is <https://github.com/promptadvisers/grokrouter>.
+GrokRouter is distributed as source from the canonical repository `swcstudiospace/grokrouter`. The Mac source installer builds and ad-hoc signs the application locally; the Windows source installer builds it locally from the same tag. Windows remains a preview until its native lifecycle is verified. No release, command, or registry URL may point at another repository.
 
-## Viewer installation paths
+## Prepare the candidate
 
-The README offers two equivalent paths:
+1. Start from current main on a separate branch. Preserve unrelated local changes.
+   If the Grok Bot feed reports a version with no manifest (`python3 scripts/check-grokbot-version.py`), follow [VERSION-TRACKING.md](VERSION-TRACKING.md) first. Never edit a version string merely to get past the gate.
+2. Keep all package and lockfile versions, the runtime version, host error version, and remote installer version consistent. Both source installers must pin the canonical repository and the candidate tag: `REPOSITORY`/`SOURCE_REF` in `scripts/install-macos.sh` and `$Repository`/`$SourceRef` (including the usage comment) in `scripts/install-windows.ps1`. The README must contain the macOS and Windows install commands for `swcstudiospace/grokrouter`, both pinned to the same tag. Run `node scripts/verify-release.mjs`; it enforces all of this.
+3. The README may name the candidate tag before it exists, but must also give the from-clone alternative for each platform and say that the tag is published only after live acceptance. `source-v0.1.0-beta.48` does not exist yet; the **Tag source release** workflow creates it after the acceptance record passes.
+4. Run `npm ci --prefix runtime --ignore-scripts --no-audit --no-fund`, `npm test`, and `npm run build:macos`. Windows CI must build both architectures and their Setup artifacts, parse `scripts/install-windows.ps1` with Windows PowerShell and `pwsh`, and run the source installer twice from the checkout.
+5. Test the source installer from a clean candidate ZIP using a separate Applications test directory and `GROKROUTER_NO_OPEN=1`. Verify the actual built app version, signature, and archive checksum.
 
-1. Paste the one-line command that downloads and runs `scripts/install-macos.sh`.
-2. Download the repository ZIP and double-click `Install GrokRouter.command`.
+## Record live acceptance
 
-Both paths compile the same checked-in Swift source, ad-hoc sign the resulting local app, verify it, install it to `~/Applications/GrokRouter.app`, and open it. Neither path needs `sudo`, a DMG, a distributed binary, or an Apple Developer certificate.
+Install the exact candidate on a supported Mac. Complete install → explicit verified stock restore → reinstall. Then create genuinely new Bots and complete every requirement in [FRESH-BOT-ACCEPTANCE.md](FRESH-BOT-ACCEPTANCE.md), including each enabled provider's actual tool results, returned-child result, no duplicate delivery, native slash discovery, deterministic controls, and per-Bot isolation. Also verify channel controls and independent request behavior.
 
-If Xcode Command Line Tools are missing, macOS opens Apple's installer. The viewer finishes that installation and runs the GrokRouter command again.
+Store redacted visible and runtime receipts in the verification record. Do not upload credentials, raw conversations unrelated to the tests, private Bot files, or proprietary host source.
 
-## Release checklist
+`docs/release-acceptance.json` must identify the candidate version, supported Grok app versions, a passed result and evidence for every required gate, and the current digest from:
 
-1. Confirm which Grok Bot version you are releasing for: `python3 scripts/check-grokbot-version.py`. If the feed reports a version with no manifest in `patch/manifests/`, follow `docs/VERSION-TRACKING.md` first — never edit a version string merely to get past the gate.
-2. Update version fields and release notes.
-3. Run `npm ci --prefix runtime --ignore-scripts --no-audit --no-fund`.
-4. Run `npm test`.
-5. Run `npm run build:macos`.
-6. Run `bash -n scripts/install-macos.sh "Install GrokRouter.command"`.
-7. Test `Install GrokRouter.command` from a clean repository ZIP on an Apple silicon Mac.
-8. Complete install → restore → reinstall with the exact build.
-9. Create a genuinely new Bot and complete `docs/FRESH-BOT-ACCEPTANCE.md`.
-10. Record the result in `docs/TEST-MATRIX.md`, commit, and wait for green CI.
-11. After the version bump has merged to `main`, create the source tag: run **Tag source release** from the Actions tab with the exact version (for example `0.1.0-beta.46`), or put `[tag-release]` in the message of the commit that lands on `main` and the workflow tags that commit with the version in `package.json`. The workflow refuses to tag a commit whose `package.json`, runtime and Windows package versions, `scripts/install-macos.sh` source ref, or README pinned command disagree with the requested version, and refuses an existing tag. Pushing the tag by hand from a clone with tag-push rights is equivalent.
+```bash
+node scripts/verify-acceptance.mjs --digest
+```
 
-## Compatibility changes
+Then verify it:
 
-If Grok Bot updates its app version, refusal is the expected behavior. Do not edit a version string merely to get past the gate. Inspect the untouched stock host, add an exact reviewed manifest, run every automated check, and repeat the complete live gate before claiming support.
+```bash
+node scripts/verify-acceptance.mjs
+```
 
-Rotating 0.30.0 host builds behind the same app version are different: they are accepted by structural verification (`anchorVerifiedHosts` in `patch/manifests/0.30.0.json`) without a registry update. The exact signed list still runs first and remains the way to pin a specific reviewed build. Changing the size band, disabling the policy, or changing the foreign-router marker is an installer release, not a registry-only update.
+A changed production source invalidates the record. Rerun the affected live checks and record the complete candidate status before updating the digest; do not simply copy the new digest into an old record. A failed or missing provider capability is not a release pass. Earlier version evidence cannot substitute for the current candidate.
 
-## Updating the 0.30.0 signed host registry
+## Publish without a broken download interval
 
-Grok may rotate the Bot-computer host while the Mac app still reports 0.30.0. Since structural verification landed, a signed registry entry is optional for such hosts; add one when you want a specific build recorded as reviewed, or when a host is rejected structurally but proves stock on inspection.
+1. Commit the candidate, evidence, and release notes. Open a PR and wait for the required Mac and Windows checks and CodeQL analysis. Resolve findings before merging.
+2. Merge the verified candidate. Main requires passing checks; do not bypass protection.
+3. Dispatch **Tag source release** for the exact version on main, or use `[tag-release]` in the release commit message. The workflow reruns CI for that commit, runs `node scripts/verify-release.mjs <version>` (the tagged README must pin that exact tag on both platforms), checks the source-bound live record, then creates the annotated source tag. A published tag must never be moved. A repeated run is allowed only if the tag already names the identical commit.
+4. Verify the tag resolves to the accepted commit, download both pinned installers and the source archive, and verify the downloaded source. Existing Actions artifacts are not a substitute for this public-download check.
+5. Remove the candidate notice and from-clone fallback wording from the README in a documentation-only PR, and state only the versions and capabilities the release proved.
+6. Publish source release notes linking the immutable tag and its known limitations. Do not attach an unsigned Mac binary as a beginner download.
+7. Reconcile support issues with the verified fixes. Distinguish an original failure that is fixed from a subsequent unsupported-version report, and avoid claiming user confirmation that has not arrived.
 
-1. Collect the complete safe report from beta.46. It must contain both SHA halves, byte count, cloud architecture, four anchor counts, and `PATCHDRYRUN=PASS`.
-2. Inspect the untouched stock host through the approved read-only process. Never ask a reporter to post proprietary host source.
-3. Add only the exact reviewed `{ "sha256", "bytes" }` pair to `compatibility/0.30.0-hosts.json`.
-4. Sign it from the repository root:
+## Exact host compatibility
 
-   ```bash
-   node scripts/sign-host-registry.mjs
-   ```
+The desktop app version and cloud-host hash are separate gates. A rotating cloud host must have an independently reviewed exact SHA-256 and byte count, every required anchor and patch seam exactly once, a successful read-only transformation/syntax check, and live acceptance. A newer desktop app also needs its own inspected and tested compatibility entry ([VERSION-TRACKING.md](VERSION-TRACKING.md)). Never change only the version string to bypass a refusal.
 
-   The private Ed25519 key lives outside the workspace at `~/.config/grokrouter/release/host-registry-private.pem` by default. Never print, copy, or commit it.
-5. Run `npm test`, verify the signature and tamper-rejection tests, then complete the exact live repair and genuinely-new-Bot acceptance gate for that host before describing it as supported.
-6. Commit and publish the registry JSON and signature together. Existing beta.46 installations will verify the signature before accepting the new exact entry.
+Structural checking provides a safe diagnostic fingerprint. It does **not** establish stock provenance and cannot authorize patching or restoration of a reviewed version's host. The single exception is the user's explicit, default-off opt-in for a Grok Bot strictly newer than every reviewed version; it never applies to a reviewed, older, or in-between version. An unknown or foreign live host stays untouched even when an older trusted backup exists. Upgrade reconstruction is limited to known router transformations over an exactly trusted original. Explicit stock restoration is a separate user operation.
 
-Changing source anchors, the patch transformation, Grok Bot version, or signing key is not a registry-only update. It requires a new installer release and the full release gate.
+For a registry update:
 
-## Optional signed distribution later
+1. Collect `HOSTSHA1`, `HOSTSHA2`, `HOSTBYTES`, `CLOUDARCH`, `ANCHORS`, `PATCHANCHORS`, and `PATCHDRYRUN`.
+2. Inspect the untouched stock host through the local or Bot-computer development workflow. Keep proprietary source outside the repository and release payload.
+3. Add only the independently reviewed exact pair to the appropriate compatibility file.
+4. Sign with `node scripts/sign-host-registry.mjs compatibility/<version>-hosts.json`. The fork's private key remains at `~/.config/grokrouter/release/host-registry-private.pem` (override with `GROKROUTER_HOST_REGISTRY_PRIVATE_KEY`); never print or copy it into the workspace, CI, or a log. Its public half is `compatibility/registry-public-key.pem`. The fork generated this key; upstream signatures are not trusted, and every shipped registry must verify with it.
+5. Verify signature acceptance and tamper rejection, then the exact live repair and fresh-Bot gate before publishing support for that host.
+6. Commit the registry and signature together. Installed routers download updates from `https://raw.githubusercontent.com/swcstudiospace/grokrouter/main/compatibility/` and verify the signature against the bundled public key.
 
-A signed and notarized ZIP can be added later without changing the source installer. That is a separate release path and requires a Developer ID Application certificate, notarization credentials, checksum verification, Gatekeeper acceptance, and a fresh-machine live gate. Until those conditions are met, do not publish an unsigned downloadable app or ask viewers to bypass Gatekeeper.
+Changing anchors, the transformation, supported desktop versions, or the signing key requires a new installer and complete acceptance, not merely a registry update.
+
+Every release gate must contain separate dated evidence under `versions` for each exact version in `compatibility/supported-apps.json`. A successful test on one desktop version cannot authorize another. Keep signatures and host manifests separated by desktop version. The unreviewed-version opt-in is not a release claim for any version; it needs its own live check (see [FRESH-BOT-ACCEPTANCE.md](FRESH-BOT-ACCEPTANCE.md)) but never substitutes for a reviewed manifest.
