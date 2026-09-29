@@ -9,7 +9,13 @@ import {
   freeModels,
   searchModels,
 } from "./openrouter-catalog.mjs";
-import { loadProviderModels, xaiSubscriptionModelIds } from "./model-catalog.mjs";
+import {
+  describeCatalog,
+  isValidModelId,
+  loadProviderModels,
+  newestFamilyModel,
+  xaiSubscriptionModelIds,
+} from "./model-catalog.mjs";
 import {
   XAI_API_BASE_URL,
   XAI_SUBSCRIPTION_BASE_URL,
@@ -24,7 +30,7 @@ const MAX_INPUT_BYTES = 50 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_IMAGES_PER_TURN = 4;
 const MAX_TOOLS = 128;
-const ROUTER_VERSION = "0.1.0-beta.47";
+const ROUTER_VERSION = "0.1.0-beta.48";
 const COMPLETED_TURN_TTL_MS = 15 * 60_000;
 const ACTIVE_TURN_TTL_MS = 15 * 60_000;
 const CHANNEL_CONTROL_LATCH_TTL_MS = 30_000;
@@ -2380,15 +2386,15 @@ export const PROVIDERS = {
     fallbackModel: "anthropic/claude-sonnet-5",
     signIn: "paste an OpenRouter key in the GrokRouter installer",
     aliases: {
-      claude: "anthropic/claude-sonnet-5",
-      sonnet: "anthropic/claude-sonnet-5",
-      opus: "anthropic/claude-opus-5",
+      claude: "anthropic/claude-sonnet-5.5",
+      sonnet: "anthropic/claude-sonnet-5.5",
+      opus: "anthropic/claude-opus-5.5",
       haiku: "anthropic/claude-haiku-4.5",
       fable: "anthropic/claude-fable-5.1",
       gpt: "openai/gpt-6-astra",
       astra: "openai/gpt-6-astra",
       gemini: "google/gemini-3.8-flash",
-      grok: "x-ai/grok-4.6",
+      grok: "x-ai/grok-4.7",
       sol: "openai/gpt-5.6-sol",
       terra: "openai/gpt-5.6-terra",
       luna: "openai/gpt-5.6-luna",
@@ -2450,11 +2456,6 @@ function modelAliases(provider) {
   return providerSpec(provider).aliases;
 }
 
-function validModelId(provider, model) {
-  if (provider === "openrouter") return /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._:+-]*$/i.test(model);
-  return /^[a-z0-9][a-z0-9._:+-]*$/i.test(model);
-}
-
 async function doctorText(config, state) {
   const checks = [];
   checks.push(`Router ${ROUTER_VERSION}: OK`);
@@ -2489,6 +2490,15 @@ async function doctorText(config, state) {
       checks.push("Codex CLI: missing");
     }
   }
+  // Cache-only: doctor reports freshness without spawning discovery.
+  const catalogProviders = [...new Set([state.provider, ...(config.providers || [])])]
+    .filter((provider) => PROVIDER_IDS.includes(provider));
+  const freshness = [];
+  for (const provider of catalogProviders) {
+    const catalog = await loadProviderModels(provider, config, {}, { cacheOnly: true });
+    freshness.push(`${providerLabel(provider)} ${describeCatalog(catalog)} (${catalog.models.length})`);
+  }
+  checks.push(`Model catalogs: ${freshness.join("; ")}`);
   checks.push(formatFailures(await recentFailures(config, 3)));
   checks.push(`Grok tools: bridged on demand (${state.provider === "codex" || state.provider === "anthropic" ? "structured adapter" : "native function calls"})`);
   checks.push("Run a real computer and sub-agent parity test before treating those capabilities as verified for a model.");
@@ -2521,11 +2531,12 @@ async function controlResult(config, key, state, input, catalogDependencies = {}
       "GrokRouter controls:",
       "• /provider codex|openrouter|anthropic|xai — switch this bot",
       "• /provider — show active provider",
-      "• /models — list configured models",
+      "• /models — list this provider's models (live, cached, or packaged)",
       "• /models free — free OpenRouter models from the live catalog",
       "• /models all [page] — every OpenRouter model, paged",
       "• /models search <text> — search the OpenRouter catalog",
       "• /model <id> — switch this bot's model",
+      "• /model sonnet|opus|haiku|fable|sol|terra|luna|astra|grok — newest model in that family",
       "• /models <id> — also switches (forgiving alias)",
       "• paste any catalog vendor/model ID by itself — also switches",
       "• /reasoning minimal|low|medium|high|xhigh — change effort",
@@ -2577,7 +2588,14 @@ async function controlResult(config, key, state, input, catalogDependencies = {}
     const catalog = await loadProviderModels(state.provider, config, catalogDependencies, {
       force: mode === "refresh",
     });
+    // Discovery failures degrade to a fallback list; the audit keeps the reason.
+    const listed = (text) => {
+      const output = result(text);
+      if (catalog.error) output.catalogWarning = catalog.error;
+      return output;
+    };
     const footer = [
+      `Catalog: ${describeCatalog(catalog)}${catalog.error ? `; ${label} could not be refreshed` : ""}.`,
       `Current: ${state.model}. Reasoning: ${state.reasoning}.`,
       state.provider === "openrouter"
         ? "Switch: send /model <id>, /models <id>, or paste any catalog vendor/model ID by itself."
@@ -2587,55 +2605,55 @@ async function controlResult(config, key, state, input, catalogDependencies = {}
         : "Also: /models all, /models search <text>, /models refresh.",
     ];
     if (!catalog.models.length) {
-      return result([
+      return listed([
         `${label} models: the live list is unavailable right now.`,
         catalog.error ? `Reason: ${redactDiagnostic(catalog.error, 160)}` : "",
         `Switch anyway with /model <id>.`,
       ].filter(Boolean).join("\n"));
     }
-    const staleNote = catalog.stale
-      ? `\n(Showing the last known list; ${label} could not be reached.)`
-      : "";
     if (mode === "free") {
       const models = freeModels(catalog.models);
-      if (!models.length) return result("No free models are listed in the current OpenRouter catalog.");
-      return result([
+      if (!models.length) return listed("No free models are listed in the current OpenRouter catalog.");
+      return listed([
         formatModelPage(models, { title: "Free OpenRouter models", page: argument, moreCommand: "/models free" }),
         'Free models rotate and may have low rate limits; those marked "no tools" cannot use Grok tools natively.',
         ...footer,
-      ].join("\n") + staleNote);
+      ].join("\n"));
     }
     if (mode === "search") {
       if (!argument) return result("Send /models search <text> with a vendor or model name.");
       const models = searchModels(catalog.models, argument);
-      if (!models.length) return result(`No ${label} model matches “${argument}”. Try /models all.`);
-      return result([
+      if (!models.length) return listed(`No ${label} model matches “${argument}”. Try /models all.`);
+      return listed([
         formatModelPage(models, { title: `${label} models matching “${argument}”`, moreCommand: `/models search ${argument}` }),
         ...footer,
-      ].join("\n") + staleNote);
+      ].join("\n"));
     }
     // A bare /models shows the first page of the same live list, so no model
     // is hidden behind a packaged shortlist.
     const page = mode === "all" ? argument : "1";
-    return result([
+    return listed([
       formatModelPage(catalog.models, { title: `${label} models`, page, moreCommand: "/models all" }),
       ...footer,
-    ].join("\n") + staleNote);
+    ].join("\n"));
   }
   const modelMatch = normalized.match(/^\/models?\s+(.+)$/i);
   if (modelMatch) {
     const requested = modelMatch[1].trim();
-    const model = modelAliases(state.provider)[requested.toLowerCase()] || requested;
+    // Family aliases resolve against the cached catalog only, so a control
+    // stays offline; the pinned alias covers an empty or unmatched catalog.
+    const catalog = await loadProviderModels(state.provider, config, catalogDependencies, { cacheOnly: true });
+    const pinned = modelAliases(state.provider)[requested.toLowerCase()];
+    const model = pinned ? newestFamilyModel(state.provider, requested, catalog.models) || pinned : requested;
     if (!providerSpec(state.provider).openIds && !configuredModels(config, state.provider).includes(model)) {
       return result(`Unknown ${providerLabel(state.provider)} model “${requested}”. Use /models to see the supported models.`);
     }
-    if (!validModelId(state.provider, model)) {
+    if (!isValidModelId(state.provider, model)) {
       return result(state.provider === "openrouter"
         ? `Invalid OpenRouter model ID “${requested}”. Use vendor/model format.`
         : `Invalid ${providerLabel(state.provider)} model ID “${requested}”.`);
     }
     let note = "";
-    const catalog = await loadProviderModels(state.provider, config, catalogDependencies, { cacheOnly: true });
     const entry = findCatalogModel(catalog.models, model);
     if (catalog.models.length && !entry) {
       note = ` Note: this ID is not in the known ${providerLabel(state.provider)} model list, so requests may fail until it exists. Send /models refresh to update the list.`;
@@ -2661,7 +2679,7 @@ async function controlResult(config, key, state, input, catalogDependencies = {}
   // is not limited to the packaged shortlist. This stays offline: only the
   // cached catalog is consulted, and anything unrecognized still falls
   // through to the explicit-/model guidance below instead of inference.
-  if (state.provider === "openrouter" && validModelId("openrouter", normalized)) {
+  if (state.provider === "openrouter" && isValidModelId("openrouter", normalized)) {
     const catalog = await loadProviderModels(state.provider, config, catalogDependencies, { cacheOnly: true });
     const entry = findCatalogModel(catalog.models, normalized);
     if (entry) {
@@ -2865,6 +2883,7 @@ export async function runTurn(input, dependencies = {}) {
     throw error;
   }
   if (control) {
+    const { catalogWarning, ...visible } = control;
     await rememberChannelControl(config, sessionOptions);
     await appendAudit(config, {
       event: "control_turn",
@@ -2874,8 +2893,9 @@ export async function runTurn(input, dependencies = {}) {
       identityFields: identity.fields,
       provider: state.provider,
       model: state.model,
+      ...(catalogWarning ? { catalogWarning: redactDiagnostic(catalogWarning, 200) } : {}),
     });
-    return { ok: true, ...control };
+    return { ok: true, ...visible };
   }
   const completedTurnStillFresh = Number(state.completedTurnAt || 0) > 0
     && Date.now() - Number(state.completedTurnAt || 0) < COMPLETED_TURN_TTL_MS;
