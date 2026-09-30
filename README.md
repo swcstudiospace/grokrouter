@@ -53,9 +53,15 @@ Grok Bot 0.62.0 moved chat inference out of the Bot computer, so a host adapter 
    ```
 
 3. Sign in to the providers you enabled, in the same terminal: `grokbot-router auth anthropic`, `grokbot-router auth codex`, or `grokbot-router auth xai`. OpenRouter reads `OPENROUTER_API_KEY` from Grok Bot's Secrets.
-4. In the Bot's chat, send `/router doctor`, then `/route <task>`.
+4. Register the slash commands once, in the Terminal of the Mac (or Windows PC, from a checkout: `node scripts\register-native-commands.mjs`) that runs Grok Bot. Grok Bot's slash menu is an account-wide workflow library inside the desktop app, so this step restarts Grok Bot once with a local-only diagnostic port, installs `/route` and the six controls, and reopens it normally:
 
-Options: `--provider`, `--providers codex,openrouter,anthropic,xai`, `--codex-model`, `--openrouter-model vendor/model`, `--anthropic-model`, `--xai-model`, `--reasoning minimal|low|medium|high|xhigh`, `--workspace DIR`, `--grok-version X.Y.Z`. `GROKROUTER_REF=<tag or branch>` in front of the command installs a version other than `main`. Running the same line again upgrades in place and keeps every Bot's selections, provider threads, and audit log.
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/swcstudiospace/grokrouter/main/scripts/register-commands.sh | bash
+   ```
+
+5. In the Bot's chat, send `/router doctor`, then `/route <task>`.
+
+Options for the Bot install: `--provider`, `--providers codex,openrouter,anthropic,xai`, `--codex-model`, `--openrouter-model vendor/model`, `--anthropic-model`, `--xai-model`, `--reasoning minimal|low|medium|high|xhigh`, `--workspace DIR`, `--grok-version X.Y.Z`. `GROKROUTER_REF=<tag or branch>` in front of either command installs a version other than `main`. Running the Bot line again upgrades in place and keeps every Bot's selections, provider threads, and audit log; running the Mac line again updates the command definitions. `bash -s -- --remove` on the Mac line removes the commands.
 
 ### Use it
 
@@ -78,7 +84,7 @@ grokbot-router uninstall                       # unregister the commands; nothin
 
 ### When Grok Bot updates
 
-Delegation mode depends only on the Bot computer's terminal, Node.js, and `~/.grok/skills`, so a new Grok Bot version needs a live check rather than a host probe. Each checked release is recorded in `compatibility/supported-apps.json` under `delegation.verifiedVersions`; [docs/DELEGATION-MODE.md](docs/DELEGATION-MODE.md) has the checklist and the design.
+Delegation mode depends only on the Bot computer's terminal and Node.js, the desktop app's shared workflow library for the slash commands, and Grok running a command's shell step and relaying its output, so a new Grok Bot version needs a live check rather than a host probe. Each checked release is recorded in `compatibility/supported-apps.json` under `delegation.verifiedVersions`; [docs/DELEGATION-MODE.md](docs/DELEGATION-MODE.md) has the checklist and the design.
 
 ## Compatibility
 

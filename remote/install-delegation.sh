@@ -587,4 +587,6 @@ fi
 if [[ "$ENABLED_PROVIDERS" == *openrouter* ]]; then
   printf 'OpenRouter uses the OPENROUTER_API_KEY saved through Grok Bot Secrets.\n'
 fi
+printf 'Then, in the Terminal of the Mac or PC that runs Grok Bot, register the slash commands:\n'
+printf '  curl -fsSL https://raw.githubusercontent.com/swcstudiospace/grokrouter/main/scripts/register-commands.sh | bash\n'
 printf 'In Grok Bot chat: /router doctor to check health, then /route <task> to delegate.\n'

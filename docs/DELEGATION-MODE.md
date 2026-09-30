@@ -20,7 +20,9 @@ sandbox. There is no seam left to patch, and no manifest can restore one.
 ## What delegation mode does instead
 
 Grok keeps running the conversation, its memory, and its own tools. GrokRouter
-becomes a native command, `/route`, that Grok runs in the Bot computer:
+becomes a native command, `/route`, registered in Grok Bot's shared workflow
+library (the account-wide slash menu inside the desktop app) that Grok runs in
+the Bot computer:
 
 1. Grok writes the task text verbatim to `/tmp/grokrouter-task.md` and runs
    `grokbot-router run --task-file /tmp/grokrouter-task.md`.
@@ -58,11 +60,15 @@ Delegation mode touches three things in the Bot computer, and nothing else:
 | Dependency | Used for | If Grok Bot changes it |
 | --- | --- | --- |
 | A terminal in the Bot computer with Node.js 18+, npm, and python3 | Installing and running the runtime | Install fails in `PREFLIGHT` with the missing command named |
-| `~/.grok/skills/<name>/SKILL.md` | Registering `/route` and the six controls as native commands | Commands stop appearing in chat; `grokbot-router doctor` still passes and `grokbot-router run` still works from the terminal |
+| The desktop app's shared workflow library, reached once over a local-only diagnostic port (`scripts/register-native-commands.mjs`, the same mechanism the desktop installers use) | Registering `/route` and the six controls as slash commands | Commands stop appearing in the slash menu; a plain-text `/route …` is answered by Grok itself without the trailer; `grokbot-router run` still works from the terminal |
 | Grok running a skill's shell command and relaying its output | `/route` and the controls | Replies stop carrying the `[GrokRouter …]` trailer; the audit log stops recording `delegation_*` events |
 
-The host file, its anchors, manifests, signed registries, the watchdog, and the
-desktop installer's DevTools/noVNC transfer are not used.
+The installer also links the seven skills into `~/.grok/skills` on the Bot
+computer; on Grok Bot 0.63.0 that directory is not what fills the slash menu,
+so the registration step is required, and the links are kept only because
+they cost nothing and document what is installed. The host file, its anchors,
+manifests, signed registries, the watchdog, and the desktop installer's
+DevTools/noVNC payload transfer are not used.
 
 ## Install and upgrade
 
@@ -89,9 +95,23 @@ curl -fsSL https://raw.githubusercontent.com/swcstudiospace/grokrouter/main/scri
 - verifies both runtimes parse and that `grokbot-router bot` can read the
   configuration, rolling back to the previous runtime otherwise.
 
-Running the same line again upgrades in place. `grokbot-router uninstall`
-unregisters the commands and disables the router; the runtime stays for
-recovery. The legacy `remote/install.sh` refuses nothing here, but it is not
+Then, once, in the Terminal of the Mac or Windows PC that runs Grok Bot:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/swcstudiospace/grokrouter/main/scripts/register-commands.sh | bash
+```
+
+`scripts/register-native-commands.mjs` (Node.js 22+; Windows: run it from a
+checkout) quits Grok Bot, reopens it with `--remote-debugging-port=19222` bound
+to 127.0.0.1, evaluates `installer/native-workflow-registration.js` with the
+seven SKILL.md definitions in the main window (install, update, or leave
+unchanged; user-owned commands with the same name are never replaced), then
+reopens Grok Bot normally. `--remove` takes the commands out again; `--print`
+lists the definitions without touching Grok Bot.
+
+Running the Bot line again upgrades in place; running the Mac line again
+updates the command bodies. `grokbot-router uninstall` unlinks the skills and
+disables the router; the runtime stays for recovery. The legacy `remote/install.sh` refuses nothing here, but it is not
 run for 0.63.0+; `grokbot-router` reads `mode` from `provider.json` and never
 invokes the patcher or host registry in delegation mode.
 
@@ -106,7 +126,8 @@ exits `3`).
 Checklist, on a Mac with the new Grok Bot:
 
 1. Open a Bot's computer and its terminal; run the one-line install (or
-   re-run it over an existing install).
+   re-run it over an existing install). Run the one-line command registration
+   on the Mac and confirm `/route` appears when you type `/ro` in a Bot's chat.
 2. `grokbot-router doctor` in the terminal: `Delegation runner: OK`, every
    command `linked`, the expected credentials.
 3. In the Bot's chat: `/router doctor`, `/provider`, then one

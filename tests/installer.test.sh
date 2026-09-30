@@ -7,6 +7,7 @@ bash -n \
   "$PROJECT_ROOT/remote/install.sh" \
   "$PROJECT_ROOT/remote/install-delegation.sh" \
   "$PROJECT_ROOT/scripts/install-bot.sh" \
+  "$PROJECT_ROOT/scripts/register-commands.sh" \
   "$PROJECT_ROOT/remote/grokbot-router" \
   "$PROJECT_ROOT/remote/grokbot-router-watchdog" \
   "$PROJECT_ROOT/remote/host-registry" \
@@ -17,6 +18,7 @@ bash -n \
 python3 -m py_compile "$PROJECT_ROOT/patch/router_patch.py"
 node --check "$PROJECT_ROOT/runtime/run-provider.mjs"
 node --check "$PROJECT_ROOT/runtime/delegate.mjs"
+node --check "$PROJECT_ROOT/scripts/register-native-commands.mjs"
 node --check "$PROJECT_ROOT/runtime/openrouter-catalog.mjs"
 node --check "$PROJECT_ROOT/runtime/xai-oauth.mjs"
 node --check "$PROJECT_ROOT/runtime/model-catalog.mjs"
@@ -778,5 +780,9 @@ grep -q 'Default provider: xai' <<<"$("$TEMPORARY/bootstrap-bin/grokbot-router" 
 grep -q 'swcstudiospace/grokrouter' "$PROJECT_ROOT/scripts/install-bot.sh"
 grep -q 'remote/install-delegation.sh' "$PROJECT_ROOT/scripts/install-bot.sh"
 grep -Fq 'curl -fsSL https://raw.githubusercontent.com/swcstudiospace/grokrouter/main/scripts/install-bot.sh | bash -s --' "$PROJECT_ROOT/README.md"
+grep -Fq 'curl -fsSL https://raw.githubusercontent.com/swcstudiospace/grokrouter/main/scripts/register-commands.sh | bash' "$PROJECT_ROOT/README.md"
+grep -Fq 'scripts/register-commands.sh | bash' "$PROJECT_ROOT/remote/install-delegation.sh"
+grep -q 'register-native-commands.mjs' "$PROJECT_ROOT/scripts/register-commands.sh"
+grep -q '^/route: ' <<<"$(node "$PROJECT_ROOT/scripts/register-native-commands.mjs" --print)"
 
 printf 'Installer and payload checks passed.\n'
