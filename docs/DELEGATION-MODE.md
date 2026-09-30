@@ -53,6 +53,23 @@ install root. The audit log (`audit.jsonl`, redacted) records
 `delegation_start`, `delegation_ok`, `delegation_error`, and `control_turn`
 events with `mode: "delegation"`. `grokbot-router logs` prints the tail.
 
+## What it costs Grok, and what it saves
+
+Grok Bot 0.62.0+ runs every chat turn on Grok's servers; the Bot computer is
+a tool sandbox. Nothing that runs inside the Bot computer can change which
+model answers a chat turn, and GrokRouter does not alter Grok's app or
+servers. So each `/route` (and each chat control) still costs one Grok turn:
+Grok reads the command, runs one shell command, and relays its output. The
+delegated provider does the task itself, on its own plan, and its work never
+touches Grok's usage.
+
+The saving is therefore proportional to the task. A task that would take Grok
+thirty tool iterations is one dispatch turn instead of thirty; a one-line
+answer saves nothing, and the `PONG` acceptance check in particular only shows
+the cost side. To spend no Grok usage at all, run `grokbot-router run` from
+the Bot terminal (or any other client of the Bot computer) and change
+settings with `grokbot-router control` there instead of the chat controls.
+
 ## What it depends on
 
 Delegation mode touches three things in the Bot computer, and nothing else:

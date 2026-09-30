@@ -70,6 +70,8 @@ Options for the Bot install: `--provider`, `--providers codex,openrouter,anthrop
 | `/route <task>` | Delegate the task to this Bot's provider and relay its report. Grok may also invoke it itself for tasks that belong to the delegated model. |
 | `/provider`, `/model`, `/models`, `/reasoning`, `/router`, `/doctor` | The same controls as in the [Use it](#use-it) table; each runs `grokbot-router control` in the Bot computer and relays its receipt. |
 
+What delegation does and does not save: Grok still runs every chat turn on its own servers (on 0.62.0+ the Bot computer is only a tool sandbox, so no router can change that), and each `/route` costs one Grok turn in which Grok reads the command, runs one shell command, and relays the output. The delegated model does the task itself on its own plan. The saving is everything Grok would otherwise have done inside the task: a thirty-step coding job is one Grok turn instead of thirty, while a one-line question saves nothing. Settings changed from the Bot terminal (`grokbot-router control "/model …"`) cost no Grok usage at all; the chat controls cost one turn each.
+
 To confirm which model did the work: every `/route` report ends with `[GrokRouter <version> · Anthropic · claude-opus-5-5 · xhigh · N steps · Ns]`; `grokbot-router logs` in the Bot terminal shows the `delegation_start` and `delegation_ok` events with the same provider and model; `/router doctor` shows the Bot's active selection. A reply without the trailer came from Grok itself.
 
 In the Bot computer:

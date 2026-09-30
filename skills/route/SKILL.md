@@ -24,7 +24,7 @@ Steps, in this Bot's computer:
 /home/box/.local/bin/grokbot-router run --task-file /tmp/grokrouter-task.md
 ```
 
-   It can take several minutes. Wait for it to finish; do not interrupt it, retry it, or start doing the task yourself while it runs.
-3. Reply with the command's standard output verbatim: same lines, same order, nothing added, nothing summarised. If the command exits non-zero, reply with its standard error verbatim instead. Keep the final bracketed `[GrokRouter …]` line: it names the provider, model, reasoning and step count that produced the report.
+   It can take several minutes. Wait for it to finish; do not interrupt it, retry it, or start doing the task yourself while it runs. Do not send any message before it finishes, not even an acknowledgement.
+3. Reply exactly once, with the command's standard output verbatim: same lines, same order, nothing added before or after, nothing summarised. If the command exits non-zero, reply with its standard error verbatim instead. Keep the final bracketed `[GrokRouter …]` line: it names the provider, model, reasoning and step count that produced the report.
 
 Never claim the task was done if the command did not print a report. If it fails with `GrokRouter is disabled`, say so and stop.
