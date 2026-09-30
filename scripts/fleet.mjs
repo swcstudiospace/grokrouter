@@ -8,20 +8,45 @@ const execFileAsync = promisify(execFile);
 export const DEFAULT_TAG = "tag:grokrouter";
 export const DEFAULT_PREFIX = "grokrouter-";
 
-export function fleetNodes(status, { tag = DEFAULT_TAG, prefix = DEFAULT_PREFIX, only = [] } = {}) {
+export const SERVICE_MARKER = "grokrouter";
+
+function peerNodes(status) {
   const candidates = [status?.Self, ...Object.values(status?.Peer || {})].filter(Boolean);
-  const nodes = [];
-  for (const peer of candidates) {
+  return candidates.map((peer) => {
     const dns = String(peer.DNSName || "").replace(/\.$/, "");
     const host = String(peer.HostName || dns.split(".")[0] || "");
     const tags = Array.isArray(peer.Tags) ? peer.Tags : [];
-    const matches = (tag && tags.includes(tag)) || (prefix && host.startsWith(prefix));
-    if (!matches || !dns) continue;
-    const name = host.replace(new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`), "") || host;
-    if (only.length && !only.includes(name) && !only.includes(host)) continue;
-    nodes.push({ name, host, dns, online: peer.Online !== false, ips: Array.isArray(peer.TailscaleIPs) ? peer.TailscaleIPs : [] });
+    return { dns, host, tags, os: String(peer.OS || ""), online: peer.Online !== false, ips: Array.isArray(peer.TailscaleIPs) ? peer.TailscaleIPs : [] };
+  }).filter((peer) => peer.dns);
+}
+
+function displayName(host, prefix) {
+  return host.replace(new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`), "") || host;
+}
+
+export function fleetNodes(status, { tag = DEFAULT_TAG, prefix = DEFAULT_PREFIX, only = [] } = {}) {
+  const nodes = [];
+  for (const peer of peerNodes(status)) {
+    const matches = (tag && peer.tags.includes(tag)) || (prefix && peer.host.startsWith(prefix));
+    if (!matches) continue;
+    const name = displayName(peer.host, prefix);
+    if (only.length && !only.includes(name) && !only.includes(peer.host)) continue;
+    nodes.push({ name, host: peer.host, dns: peer.dns, online: peer.online, ips: peer.ips });
   }
   return nodes.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function probeCandidates(status, { tag = DEFAULT_TAG, prefix = DEFAULT_PREFIX, only = [] } = {}) {
+  const matchedDns = new Set(fleetNodes(status, { tag, prefix, only: [] }).map((node) => node.dns));
+  const extras = [];
+  for (const peer of peerNodes(status)) {
+    if (matchedDns.has(peer.dns) || !peer.online) continue;
+    if (peer.os && peer.os !== "linux") continue;
+    const name = displayName(peer.host, prefix);
+    if (only.length && !only.includes(name) && !only.includes(peer.host)) continue;
+    extras.push({ name, host: peer.host, dns: peer.dns, online: true, ips: peer.ips });
+  }
+  return extras;
 }
 
 export async function tailscaleStatus({ tailscaleBinary = "tailscale" } = {}) {
@@ -60,6 +85,26 @@ export class BotClient {
     throw new Error(`${this.node.name} is not reachable over the tailnet (${lastError?.message || "no answer"}); is grokbot-router tailscale serve running there?`);
   }
 
+  async isGrokRouter({ timeoutMilliseconds = 4_000 } = {}) {
+    for (const base of this.bases) {
+      let body;
+      try {
+        const response = await this.fetchImpl(`${base}/api/health`, { headers: { authorization: `Bearer ${this.token}` }, signal: AbortSignal.timeout(timeoutMilliseconds) });
+        if (!response.ok) continue;
+        body = await response.json();
+      } catch {
+        continue;
+      }
+      if (body && (body.service === SERVICE_MARKER || body.mode === "delegation")) {
+        this.base = base;
+        this.health = body;
+        return true;
+      }
+      return false;
+    }
+    return false;
+  }
+
   async rpc(method, params = {}, { timeoutMilliseconds = 30 * 60_000 } = {}) {
     const base = await this.resolveBase();
     const id = this.nextId++;
@@ -82,8 +127,22 @@ export class BotClient {
   }
 }
 
-export async function discover({ token, tag, prefix, only, fetchImpl, tailscaleBinary, status } = {}) {
-  const nodes = fleetNodes(status || await tailscaleStatus({ tailscaleBinary }), { tag, prefix, only });
+export async function discover({ token, tag, prefix, only, fetchImpl, tailscaleBinary, status, probe } = {}) {
+  const resolved = status || await tailscaleStatus({ tailscaleBinary });
+  const matched = fleetNodes(resolved, { tag, prefix, only });
+  const shouldProbe = probe === undefined ? !status : probe;
+  let nodes = matched;
+  if (shouldProbe) {
+    const extras = probeCandidates(resolved, { tag, prefix, only });
+    const confirmed = await Promise.all(extras.map(async (node) => {
+      const client = new BotClient(node, { token, fetchImpl });
+      return (await client.isGrokRouter().catch(() => false)) ? { node, client } : null;
+    }));
+    const found = confirmed.filter(Boolean);
+    nodes = [...matched.map((node) => ({ node, client: new BotClient(node, { token, fetchImpl }) })), ...found]
+      .sort((a, b) => a.node.name.localeCompare(b.node.name));
+    return nodes;
+  }
   return nodes.map((node) => ({ node, client: new BotClient(node, { token, fetchImpl }) }));
 }
 
@@ -113,9 +172,9 @@ const FLEET_TOOLS = [
   { name: "upgrade", description: "Re-run the recorded one-line GrokRouter install on one Bot computer, or on every reachable one when bot is omitted.", inputSchema: { type: "object", properties: { bot: { type: "string" }, ref: { type: "string" } } } },
 ];
 
-export async function fleetToolCall(name, args, { token, tag, prefix, fetchImpl, tailscaleBinary, caller = "fleet", status } = {}) {
+export async function fleetToolCall(name, args, { token, tag, prefix, fetchImpl, tailscaleBinary, caller = "fleet", status, probe, discovered } = {}) {
   const input = args && typeof args === "object" ? args : {};
-  const bots = await discover({ token, tag, prefix, fetchImpl, tailscaleBinary, status });
+  const bots = discovered || await discover({ token, tag, prefix, fetchImpl, tailscaleBinary, status, probe });
   const pick = () => {
     const bot = bots.find(({ node }) => node.name === input.bot || node.host === input.bot);
     if (!bot) throw new Error(`Unknown bot ${input.bot}; known: ${bots.map(({ node }) => node.name).join(", ") || "none"}`);
@@ -200,7 +259,8 @@ function usage() {
     "GrokRouter fleet: talk to every GrokRouter Bot computer on your tailnet from one place.",
     "",
     "Usage: node scripts/fleet.mjs <command> [options]",
-    "  bots                              List Bot computers (tag:grokrouter or grokrouter-* nodes) with version and selection",
+    "  bots                              List Bot computers (tag:grokrouter or grokrouter-* nodes, plus any online node",
+    "                                    that answers as a GrokRouter Bot) with version and selection",
     "  status [--only a,b]               Active provider/model/reasoning on each Bot",
     "  delegate --bot NAME --task TEXT   Run a task on one Bot and print its report",
     "  control --bot NAME --text \"/model …\"",
@@ -208,7 +268,7 @@ function usage() {
     "  mcp                               Serve these as an MCP server over stdio (for Claude Code, Hermes, …)",
     "",
     "Options: --token TOKEN (or GROKROUTER_CHAT_TOKEN), --tag tag:grokrouter, --prefix grokrouter-, --selection KEY (default fleet),",
-    "         --tailscale PATH (the tailscale binary on this machine).",
+    "         --tailscale PATH (the tailscale binary on this machine), --no-probe (only tagged/prefixed nodes, skip service probe).",
     "Requires this machine to be on the same tailnet, with the shared chat token used at install time.",
   ].join("\n");
 }
@@ -229,6 +289,8 @@ export async function main(argv = process.argv.slice(2)) {
     else if (argument === "--ref") options.ref = value();
     else if (argument === "--selection") options.caller = value();
     else if (argument === "--tailscale") options.tailscaleBinary = value();
+    else if (argument === "--probe") options.probe = true;
+    else if (argument === "--no-probe") options.probe = false;
     else if (argument === "-h" || argument === "--help") {
       process.stdout.write(`${usage()}\n`);
       return;
@@ -250,7 +312,7 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
   if (command === "bots") {
-    const result = await fleetToolCall("bots", {}, options);
+    const result = await fleetToolCall("bots", {}, { ...options, discovered: bots });
     line(result.content[0].text);
     return;
   }
@@ -264,7 +326,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
   if (command === "delegate" || command === "control") {
     if (!options.bot) throw new Error(`${command} needs --bot NAME`);
-    const result = await fleetToolCall(command, command === "delegate" ? { bot: options.bot, task: options.task } : { bot: options.bot, text: options.text }, options);
+    const result = await fleetToolCall(command, command === "delegate" ? { bot: options.bot, task: options.task } : { bot: options.bot, text: options.text }, { ...options, discovered: bots });
     line(result.content[0].text);
     return;
   }

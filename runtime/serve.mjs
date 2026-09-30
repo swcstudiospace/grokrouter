@@ -140,10 +140,22 @@ function readBody(request) {
   });
 }
 
-function authorized(request, url, token) {
+function presentedToken(request, url) {
   const header = String(request.headers.authorization || "");
-  if (header.toLowerCase().startsWith("bearer ") && header.slice(7).trim() === token) return true;
-  return url.searchParams.get("token") === token;
+  if (header.toLowerCase().startsWith("bearer ")) return header.slice(7).trim();
+  return url.searchParams.get("token");
+}
+
+function authorized(request, url, token) {
+  return presentedToken(request, url) === token;
+}
+
+export const SERVICE_NAME = "grokrouter";
+
+export function healthPayload(config, { authenticated }) {
+  const identity = { service: SERVICE_NAME, version: ROUTER_VERSION, authenticated };
+  if (!authenticated) return identity;
+  return { ...identity, ok: true, mode: "delegation", enabled: config.enabled !== false, providers: config.providers || [], installSource: config.installSource || null, mcp: "/mcp" };
 }
 
 const MCP_PROTOCOL_VERSION = "2025-06-18";
@@ -390,12 +402,16 @@ export function createChatServer({
       json(response, 404, { error: "Not found" });
       return;
     }
+    if (request.method === "GET" && path === "/api/health" && presentedToken(request, url) === null) {
+      json(response, 200, healthPayload(config, { authenticated: false }));
+      return;
+    }
     if (!authorized(request, url, token)) {
       json(response, 401, { error: "A valid chat token is required" });
       return;
     }
     if (request.method === "GET" && path === "/api/health") {
-      json(response, 200, { ok: true, version: ROUTER_VERSION, mode: "delegation", enabled: config.enabled !== false, providers: config.providers || [], installSource: config.installSource || null, mcp: "/mcp" });
+      json(response, 200, healthPayload(config, { authenticated: true }));
       return;
     }
     if (request.method === "GET" && path === "/api/chats") {

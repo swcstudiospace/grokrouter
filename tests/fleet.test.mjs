@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { BotClient, DEFAULT_TAG, fleetNodes, fleetToolCall } from "../scripts/fleet.mjs";
+import { BotClient, DEFAULT_TAG, discover, fleetNodes, fleetToolCall } from "../scripts/fleet.mjs";
 
 const script = fileURLToPath(new URL("../scripts/fleet.mjs", import.meta.url));
 
@@ -70,6 +70,30 @@ test("fleet tools fan out over the discovered Bots and address one by name", asy
   const upgrade = await fleetToolCall("upgrade", {}, options);
   assert.match(upgrade.content[0].text, /52281608: Upgrade started\nship-desk: Upgrade started/);
   assert.equal(await fleetToolCall("nope", {}, options), null);
+});
+
+test("discovery probes untagged online nodes and identifies a Bot by its GrokRouter service marker", async () => {
+  const probeStatus = {
+    Self: { HostName: "vps", DNSName: "vps.tail1234.ts.net.", Tags: [], Online: true },
+    Peer: {
+      a: { HostName: "ship-desk", DNSName: "ship-desk.tail1234.ts.net.", Tags: [], Online: true, TailscaleIPs: ["100.0.0.9"] },
+      b: { HostName: "laptop", DNSName: "laptop.tail1234.ts.net.", Tags: [], Online: true },
+      c: { HostName: "grok-bot-box", DNSName: "grok-bot-box.tail1234.ts.net.", Tags: [], Online: false },
+    },
+  };
+  const probed = [];
+  const fetchImpl = async (url) => {
+    probed.push(url);
+    if (!url.endsWith("/api/health")) throw new Error(`unexpected ${url}`);
+    if (url.includes("ship-desk")) return new Response(JSON.stringify({ service: "grokrouter", version: "0.1.0", mode: "delegation" }), { status: 200 });
+    return new Response(JSON.stringify({ hello: "world" }), { status: 200 });
+  };
+  const found = await discover({ token: "t", fetchImpl, status: probeStatus, probe: true });
+  assert.deepEqual(found.map((entry) => entry.node.name), ["ship-desk"]);
+  assert.equal(found[0].client.base, "https://ship-desk.tail1234.ts.net");
+  assert.ok(!probed.some((url) => url.includes("grok-bot-box")), "offline nodes are not probed");
+  const none = await discover({ token: "t", fetchImpl, status: probeStatus, probe: false });
+  assert.deepEqual(none.map((entry) => entry.node.name), []);
 });
 
 test("the fleet CLI refuses to run without a token and prints usage", () => {

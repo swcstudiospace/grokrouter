@@ -76,6 +76,19 @@ test("chats are created, messages stream to the delegated provider with history,
     assert.equal((await fetch(`${base}/api/chats`, { headers: { authorization: "Bearer wrong" } })).status, 401);
     assert.equal((await fetch(`${base}/api/chats?token=secret-token-abcdefgh`)).status, 200);
 
+    const anonHealth = await fetch(`${base}/api/health`);
+    assert.equal(anonHealth.status, 200);
+    const anonBody = await anonHealth.json();
+    assert.equal(anonBody.service, "grokrouter");
+    assert.equal(anonBody.authenticated, false);
+    assert.equal(anonBody.installSource, undefined);
+    assert.equal((await fetch(`${base}/api/health`, { headers: { authorization: "Bearer wrong" } })).status, 401);
+    const authHealth = await (await fetch(`${base}/api/health`, { headers })).json();
+    assert.equal(authHealth.service, "grokrouter");
+    assert.equal(authHealth.authenticated, true);
+    assert.equal(authHealth.mode, "delegation");
+    assert.equal(authHealth.mcp, "/mcp");
+
     const created = await (await fetch(`${base}/api/chats`, { method: "POST", headers, body: "{}" })).json();
     assert.match(created.chat.id, /^[a-z0-9]{12}$/);
     assert.equal(created.status.provider, "openrouter");
