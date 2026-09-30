@@ -3,11 +3,18 @@
 
 Read-only. Prints a JSON report to stdout:
   {"feedVersion": "0.58.0", "supported": ["0.30.0", "0.44.0"],
-   "supportedFeed": false, "commitSha": "...", "downloadUrl": "..."}
+   "supportedFeed": false, "mode": "adapter", "commitSha": "...", "downloadUrl": "..."}
+
+Two support tracks exist. Versions below the delegation floor recorded in
+compatibility/supported-apps.json ("delegation.minimumVersion") belong to the
+deprecated host adapter and are supported only with a manifest. Versions at or
+above the floor belong to delegation mode and are supported once a live check
+records them in "delegation.verifiedVersions".
 
 Exit codes:
-  0 - the feed version already has a manifest, or --report was used.
-  2 - the feed reports a version with no manifest (used with --check in CI).
+  0 - the feed version is supported on its track, or --check was not used.
+  2 - an adapter-track version has no manifest (used with --check in CI).
+  3 - a delegation-track version has not had its live check yet (--check).
   1 - any error (network, malformed feed, no manifests on disk).
 
 Only stdlib is used so this runs on any CI runner and Mac without deps.
@@ -36,6 +43,22 @@ def manifest_versions(manifests: Path) -> list[str]:
     return versions
 
 
+def version_key(value: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in value.split("."))
+
+
+def delegation_support(supported_apps: Path) -> dict:
+    try:
+        block = json.loads(supported_apps.read_text()).get("delegation") or {}
+    except Exception:
+        return {}
+    minimum = str(block.get("minimumVersion", ""))
+    if not VERSION_RE.match(minimum):
+        return {}
+    verified = [str(item) for item in block.get("verifiedVersions", []) if VERSION_RE.match(str(item))]
+    return {"minimumVersion": minimum, "verifiedVersions": sorted(verified, key=version_key)}
+
+
 def fetch_feed_version(feed_url: str) -> tuple[str, dict]:
     request = urllib.request.Request(feed_url, headers={"User-Agent": "grokrouter-version-watch"})
     with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
@@ -50,6 +73,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--feed-url", default=FEED_URL)
     parser.add_argument("--manifests", default=str(Path(__file__).resolve().parents[1] / "patch" / "manifests"))
+    parser.add_argument("--supported-apps", default=str(Path(__file__).resolve().parents[1] / "compatibility" / "supported-apps.json"))
     parser.add_argument("--check", action="store_true",
                         help="exit 2 when the feed version has no manifest")
     args = parser.parse_args()
@@ -64,16 +88,20 @@ def main() -> int:
     except Exception as error:
         print(f"Could not read the Grok Bot update feed: {error}", file=sys.stderr)
         return 1
+    delegation = delegation_support(Path(args.supported_apps))
+    delegated = bool(delegation) and version_key(feed_version) >= version_key(delegation["minimumVersion"])
     report = {
         "feedVersion": feed_version,
         "supported": sorted(supported),
-        "supportedFeed": feed_version in supported,
+        "mode": "delegation" if delegated else "adapter",
+        "delegation": delegation,
+        "supportedFeed": feed_version in delegation["verifiedVersions"] if delegated else feed_version in supported,
         "commitSha": payload.get("commitSha", ""),
         "downloadUrl": payload.get("downloadUrl", ""),
     }
     print(json.dumps(report, indent=2))
-    if args.check and feed_version not in supported:
-        return 2
+    if args.check and not report["supportedFeed"]:
+        return 3 if delegated else 2
     return 0
 
 

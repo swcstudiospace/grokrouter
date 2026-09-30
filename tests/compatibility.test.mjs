@@ -9,7 +9,24 @@ import { execFileSync, spawnSync } from 'node:child_process';
 const root = new URL('../', import.meta.url);
 const text = p => readFile(new URL(p, root), 'utf8');
 const json = async p => JSON.parse(await text(p));
-const { versions } = await json('compatibility/supported-apps.json');
+const { versions, delegation } = await json('compatibility/supported-apps.json');
+const semver = (value) => value.split('.').map(Number);
+const newer = (a, b) => { const [x, y] = [semver(a), semver(b)]; for (let i = 0; i < 3; i += 1) if (x[i] !== y[i]) return x[i] > y[i]; return false; };
+
+test('delegation mode starts after the last host-adapter version and the installer pins the same floor', async () => {
+  assert.match(delegation.minimumVersion, /^\d+\.\d+\.\d+$/);
+  for (const version of versions) assert.ok(newer(delegation.minimumVersion, version), `${delegation.minimumVersion} must be newer than adapter version ${version}`);
+  assert.ok(delegation.verifiedVersions.length > 0);
+  for (const version of delegation.verifiedVersions) {
+    assert.match(version, /^\d+\.\d+\.\d+$/);
+    assert.ok(!newer(delegation.minimumVersion, version), `${version} is below the delegation floor`);
+  }
+  const installer = await text('remote/install-delegation.sh');
+  assert.ok(installer.includes(`MINIMUM_GROK_VERSION="${delegation.minimumVersion}"`));
+  assert.doesNotMatch(installer, /router_patch\.py|bin\/host-registry|pkill|sand-host/);
+  const readme = await text('README.md');
+  assert.ok(readme.includes(`Grok Bot ${delegation.minimumVersion}`));
+});
 
 test('every exact desktop version has a signed registry and a matching strict manifest', async () => {
   assert.ok(versions.length > 0);

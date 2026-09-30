@@ -5,6 +5,8 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 bash -n \
   "$PROJECT_ROOT/remote/install.sh" \
+  "$PROJECT_ROOT/remote/install-delegation.sh" \
+  "$PROJECT_ROOT/scripts/install-bot.sh" \
   "$PROJECT_ROOT/remote/grokbot-router" \
   "$PROJECT_ROOT/remote/grokbot-router-watchdog" \
   "$PROJECT_ROOT/remote/host-registry" \
@@ -14,6 +16,7 @@ bash -n \
   "$PROJECT_ROOT/Install GrokRouter.command"
 python3 -m py_compile "$PROJECT_ROOT/patch/router_patch.py"
 node --check "$PROJECT_ROOT/runtime/run-provider.mjs"
+node --check "$PROJECT_ROOT/runtime/delegate.mjs"
 node --check "$PROJECT_ROOT/runtime/openrouter-catalog.mjs"
 node --check "$PROJECT_ROOT/runtime/xai-oauth.mjs"
 node --check "$PROJECT_ROOT/runtime/model-catalog.mjs"
@@ -262,6 +265,21 @@ for skill_name in provider models model reasoning router doctor; do
   grep -q '^disable-model-invocation: true$' "$PAYLOAD/skills/$skill_name/SKILL.md"
   grep -q "^GROKROUTER_NATIVE_CONTROL: $(printf '%s' "$skill_name" | tr '[:lower:]' '[:upper:]')$" "$PAYLOAD/skills/$skill_name/SKILL.md"
 done
+# /route is the delegation entry point: Grok may invoke it itself for tasks
+# that belong to the delegated model, so it is the only model-invocable command.
+[[ -f "$PAYLOAD/skills/route/SKILL.md" ]]
+grep -q '^user-invocable: true$' "$PAYLOAD/skills/route/SKILL.md"
+grep -q '^disable-model-invocation: false$' "$PAYLOAD/skills/route/SKILL.md"
+grep -q '^GROKROUTER_NATIVE_CONTROL: ROUTE$' "$PAYLOAD/skills/route/SKILL.md"
+grep -q 'grokbot-router run --task-file' "$PAYLOAD/skills/route/SKILL.md"
+for skill_name in provider models model reasoning router doctor; do
+  grep -q "grokbot-router control \"/$skill_name" "$PAYLOAD/skills/$skill_name/SKILL.md"
+done
+[[ -x "$PAYLOAD/remote/install-delegation.sh" ]]
+[[ -f "$PAYLOAD/runtime/delegate.mjs" ]]
+grep -Fq "ROUTER_VERSION=\"$PAYLOAD_VERSION\"" "$PAYLOAD/remote/install-delegation.sh"
+DELEGATION_MINIMUM="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["delegation"]["minimumVersion"])' "$PROJECT_ROOT/compatibility/supported-apps.json")"
+grep -Fq "MINIMUM_GROK_VERSION=\"$DELEGATION_MINIMUM\"" "$PAYLOAD/remote/install-delegation.sh"
 
 HOST_FIXTURE="$PROJECT_ROOT/tests/fixtures/host-main.cjs"
 TEST_HOST="$TEMPORARY/host-main.cjs"
@@ -614,5 +632,151 @@ for skill_name in provider models model router doctor; do
   [[ ! -e "$TEST_GROK_SKILLS/$skill_name" && ! -L "$TEST_GROK_SKILLS/$skill_name" ]]
 done
 grep -q 'user-owned' "$TEST_GROK_SKILLS/reasoning/KEEP"
+
+# Delegation mode (Grok Bot 0.63.0+): no host, no watchdog, every control and
+# task goes through the CLI that the native commands run. Exercise the real
+# installer from the payload without any provider download.
+DELEGATION_RUNTIME="$TEMPORARY/delegation-runtime"
+DELEGATION_BIN="$TEMPORARY/delegation-bin"
+DELEGATION_SKILLS="$TEMPORARY/delegation-grok-skills"
+DELEGATION_HOST="$TEMPORARY/delegation-host-main.cjs"
+cp "$HOST_FIXTURE" "$DELEGATION_HOST"
+UNKNOWN_DELEGATION_OPTION="$(ROUTER_INSTALL_ATTEMPT=DELEG0 bash "$PAYLOAD/remote/install-delegation.sh" --not-a-real-option 2>&1 || true)"
+grep -q 'GROKROUTER_DELEG0_INSTALL_FAILED_OPTIONS_UNKNOWN_OPTION' <<<"$UNKNOWN_DELEGATION_OPTION"
+OLD_VERSION_FAILURE="$(ROUTER_INSTALL_ATTEMPT=DELEG1 bash "$PAYLOAD/remote/install-delegation.sh" --install-root "$DELEGATION_RUNTIME" --grok-version 0.44.0 2>&1 || true)"
+grep -q 'GROKROUTER_DELEG1_INSTALL_FAILED_OPTIONS_UNSUPPORTED_VERSION' <<<"$OLD_VERSION_FAILURE"
+[[ ! -e "$DELEGATION_RUNTIME" ]]
+for rejected_option in "--provider gemini INVALID_PROVIDER" "--providers codex,gemini INVALID_PROVIDERS" "--reasoning extreme INVALID_REASONING" "--workspace relative/path INVALID_WORKSPACE" "--anthropic-model claude|sh INVALID_ANTHROPIC_MODEL"; do
+  read -r option_name option_value option_code <<<"$rejected_option"
+  OPTION_FAILURE="$(ROUTER_INSTALL_ATTEMPT=DELEG2 bash "$PAYLOAD/remote/install-delegation.sh" --install-root "$DELEGATION_RUNTIME" "$option_name" "$option_value" 2>&1 || true)"
+  grep -q "GROKROUTER_DELEG2_INSTALL_FAILED_OPTIONS_$option_code" <<<"$OPTION_FAILURE"
+done
+mkdir -p "$DELEGATION_SKILLS/reasoning"
+printf 'user-owned\n' > "$DELEGATION_SKILLS/reasoning/KEEP"
+ROUTER_PATCH_HOST="$DELEGATION_HOST" \
+ROUTER_BIN_DIR="$DELEGATION_BIN" \
+ROUTER_GROK_SKILLS_ROOT="$DELEGATION_SKILLS" \
+ROUTER_INSTALL_ATTEMPT=DELEG3 \
+bash "$PAYLOAD/remote/install-delegation.sh" \
+  --install-root "$DELEGATION_RUNTIME" \
+  --grok-version 0.63.0 \
+  --provider openrouter \
+  --providers openrouter,xai \
+  --openrouter-model anthropic/claude-opus-5.5 \
+  --reasoning xhigh \
+  >"$TEMPORARY/install-delegation.log" 2>&1
+for phase in PREFLIGHT VALIDATE_PAYLOAD PREPARE_RUNTIME INSTALL_DEPENDENCIES ACTIVATE_RUNTIME REGISTER_COMMANDS VERIFY_INSTALL COMPLETE; do
+  grep -q "GROKROUTER_DELEG3_PHASE_$phase" "$TEMPORARY/install-delegation.log"
+done
+grep -q 'GROKBOT_ROUTER_INSTALL_OK' "$TEMPORARY/install-delegation.log"
+grep -q 'Payload integrity manifest verified' "$TEMPORARY/install-delegation.log"
+grep -q 'Mode: delegation (Grok Bot 0.63.0; the host is not patched)' "$TEMPORARY/install-delegation.log"
+grep -q 'OpenRouter is active for this bot. Model: anthropic/claude-opus-5.5. Reasoning: xhigh.' "$TEMPORARY/install-delegation.log"
+! grep -q 'GROKROUTER_DELEG3_PHASE_APPLY_ADAPTER' "$TEMPORARY/install-delegation.log"
+cmp "$HOST_FIXTURE" "$DELEGATION_HOST"
+[[ ! -d "$DELEGATION_RUNTIME/node_modules" ]]
+[[ ! -e "$DELEGATION_RUNTIME/patch" ]]
+[[ ! -e "$DELEGATION_RUNTIME/bin/grokbot-router-watchdog" ]]
+[[ -f "$DELEGATION_RUNTIME/delegate.mjs" ]]
+[[ -L "$DELEGATION_BIN/grokbot-router" ]]
+# macOS temporary directories are symlinked (/var -> /private/var); compare physical paths.
+DELEGATION_RUNTIME_PHYSICAL="$(cd -P "$DELEGATION_RUNTIME" && pwd -P)"
+for skill_name in provider models model router doctor route; do
+  [[ -L "$DELEGATION_SKILLS/$skill_name" ]]
+  [[ "$(readlink "$DELEGATION_SKILLS/$skill_name")" == "$DELEGATION_RUNTIME_PHYSICAL/skills/$skill_name" ]]
+done
+[[ ! -L "$DELEGATION_SKILLS/reasoning" ]]
+grep -q 'user-owned' "$DELEGATION_SKILLS/reasoning/KEEP"
+python3 - "$DELEGATION_RUNTIME/provider.json" "$PROJECT_ROOT/runtime/provider.default.json" <<'PY'
+import json
+import sys
+
+config = json.load(open(sys.argv[1]))
+defaults = json.load(open(sys.argv[2]))
+assert config["mode"] == "delegation", config.get("mode")
+assert config["enabled"] is True and config["autoRepair"] is False
+assert config["grokBotVersion"] == "0.63.0"
+assert config["grokBotSupport"] == ">=0.63.0"
+assert config["provider"] == "openrouter"
+assert config["providers"] == ["openrouter", "xai"], config["providers"]
+assert config["openRouterModel"] == "anthropic/claude-opus-5.5"
+assert config["openRouterReasoning"] == "xhigh"
+assert config["workingDirectory"] == "/workspace"
+assert config["delegationRunnerPath"].endswith("/delegate.mjs")
+assert "unreviewedVersion" not in config and "templateManifestVersion" not in config
+assert config["anthropicModels"] == defaults["anthropicModels"]
+assert "claude-opus-5-5" in config["anthropicModels"]
+PY
+DELEGATION_STATUS="$("$DELEGATION_BIN/grokbot-router" status)"
+grep -q 'Mode: delegation' <<<"$DELEGATION_STATUS"
+grep -q 'Default provider: openrouter' <<<"$DELEGATION_STATUS"
+grep -q 'OpenRouter is active for this bot. Model: anthropic/claude-opus-5.5. Reasoning: xhigh.' <<<"$("$DELEGATION_BIN/grokbot-router" bot)"
+grep -q 'to xAI (grok-4.6)' <<<"$("$DELEGATION_BIN/grokbot-router" control "/provider xai")"
+grep -q 'xAI is active for this bot. Model: grok-4.6. Reasoning: medium.' <<<"$("$DELEGATION_BIN/grokbot-router" bot)"
+grep -q 'Reasoning effort' <<<"$("$DELEGATION_BIN/grokbot-router" control "/reasoning xhigh")"
+grep -q 'Reasoning: xhigh' <<<"$("$DELEGATION_BIN/grokbot-router" bot)"
+# Every Bot keeps its own selection: another Bot still sees the defaults.
+grep -q 'OpenRouter is active for this bot. Model: anthropic/claude-opus-5.5. Reasoning: xhigh.' <<<"$("$DELEGATION_BIN/grokbot-router" bot other-bot)"
+grep -q 'no host restart needed' <<<"$(ROUTER_PATCH_HOST="$DELEGATION_HOST" "$DELEGATION_BIN/grokbot-router" model xai grok-4.5)"
+grep -q 'xAI model: grok-4.5' <<<"$("$DELEGATION_BIN/grokbot-router" status)"
+grep -q 'Delegation mode does not patch or restart the host' <<<"$("$DELEGATION_BIN/grokbot-router" restart)"
+grep -q 'delegation mode' <<<"$("$DELEGATION_BIN/grokbot-router" disable)"
+if "$DELEGATION_BIN/grokbot-router" run --task "reply with exactly PING" >"$TEMPORARY/delegation-run.out" 2>"$TEMPORARY/delegation-run.err"; then
+  echo 'A disabled delegation router must refuse tasks' >&2
+  exit 1
+fi
+grep -q 'GrokRouter is disabled' "$TEMPORARY/delegation-run.err"
+[[ ! -s "$TEMPORARY/delegation-run.out" ]]
+grep -q 'Router enabled (delegation mode)' <<<"$("$DELEGATION_BIN/grokbot-router" enable)"
+grep -q 'nothing to repair' <<<"$("$DELEGATION_BIN/grokbot-router" repair)"
+DELEGATION_DOCTOR_CONTROL="$("$DELEGATION_BIN/grokbot-router" control "/doctor")"
+grep -q 'Delegated tasks: local shell/read/write/list tool loop in /workspace' <<<"$DELEGATION_DOCTOR_CONTROL"
+! grep -q 'Grok tools: bridged' <<<"$DELEGATION_DOCTOR_CONTROL"
+ROUTER_GROK_SKILLS_ROOT="$DELEGATION_SKILLS" "$DELEGATION_BIN/grokbot-router" doctor >"$TEMPORARY/delegation-doctor.log" 2>&1
+grep -q 'Delegation runner: OK' "$TEMPORARY/delegation-doctor.log"
+grep -q 'xAI is active for this bot' "$TEMPORARY/delegation-doctor.log"
+grep -q '/route: linked' "$TEMPORARY/delegation-doctor.log"
+grep -q '/reasoning: user-owned definition' "$TEMPORARY/delegation-doctor.log"
+grep -q 'GROKBOT_ROUTER_DOCTOR_DONE' "$TEMPORARY/delegation-doctor.log"
+! grep -q 'Host adapter' "$TEMPORARY/delegation-doctor.log"
+! grep -q 'Host seam' "$TEMPORARY/delegation-doctor.log"
+cmp "$HOST_FIXTURE" "$DELEGATION_HOST"
+
+# Upgrading in place keeps the default provider, the per-Bot selection, the
+# thread state and the audit log, and refreshes the packaged runtime.
+cp "$DELEGATION_RUNTIME/audit.jsonl" "$TEMPORARY/delegation-pre-upgrade-audit"
+printf '\n// stale runtime\n' >> "$DELEGATION_RUNTIME/delegate.mjs"
+ROUTER_BIN_DIR="$DELEGATION_BIN" \
+ROUTER_GROK_SKILLS_ROOT="$DELEGATION_SKILLS" \
+bash "$PAYLOAD/remote/install-delegation.sh" --install-root "$DELEGATION_RUNTIME" >"$TEMPORARY/install-delegation-upgrade.log" 2>&1
+grep -q 'GROKBOT_ROUTER_INSTALL_OK' "$TEMPORARY/install-delegation-upgrade.log"
+cmp "$PAYLOAD/runtime/delegate.mjs" "$DELEGATION_RUNTIME/delegate.mjs"
+cmp "$TEMPORARY/delegation-pre-upgrade-audit" "$DELEGATION_RUNTIME/audit.jsonl"
+grep -q 'xAI is active for this bot. Model: grok-4.6. Reasoning: xhigh.' <<<"$("$DELEGATION_BIN/grokbot-router" bot)"
+grep -q 'Default provider: openrouter' <<<"$("$DELEGATION_BIN/grokbot-router" status)"
+grep -q 'Grok Bot version: 0.63.0' <<<"$("$DELEGATION_BIN/grokbot-router" status)"
+[[ "$(readlink "$DELEGATION_SKILLS/route")" == "$DELEGATION_RUNTIME_PHYSICAL/skills/route" ]]
+
+ROUTER_GROK_SKILLS_ROOT="$DELEGATION_SKILLS" "$DELEGATION_BIN/grokbot-router" uninstall >"$TEMPORARY/delegation-uninstall.log"
+grep -q 'GROKBOT_ROUTER_UNINSTALL_OK' "$TEMPORARY/delegation-uninstall.log"
+for skill_name in provider models model router doctor route; do
+  [[ ! -e "$DELEGATION_SKILLS/$skill_name" && ! -L "$DELEGATION_SKILLS/$skill_name" ]]
+done
+grep -q 'user-owned' "$DELEGATION_SKILLS/reasoning/KEEP"
+grep -q 'Enabled: False' <<<"$("$DELEGATION_BIN/grokbot-router" status)"
+cmp "$HOST_FIXTURE" "$DELEGATION_HOST"
+
+# The one-line Bot terminal installer hands every option to the delegation
+# installer from a local checkout without downloading anything.
+BOOTSTRAP_RUNTIME="$TEMPORARY/bootstrap-runtime"
+ROUTER_BIN_DIR="$TEMPORARY/bootstrap-bin" \
+ROUTER_GROK_SKILLS_ROOT="$TEMPORARY/bootstrap-grok-skills" \
+bash "$PROJECT_ROOT/scripts/install-bot.sh" --install-root "$BOOTSTRAP_RUNTIME" --provider xai --providers xai >"$TEMPORARY/install-bot.log" 2>&1
+grep -q 'GROKBOT_ROUTER_INSTALL_OK' "$TEMPORARY/install-bot.log"
+grep -q 'Source checkout: no payload integrity manifest to verify' "$TEMPORARY/install-bot.log"
+grep -q 'Default provider: xai' <<<"$("$TEMPORARY/bootstrap-bin/grokbot-router" status)"
+grep -q 'swcstudiospace/grokrouter' "$PROJECT_ROOT/scripts/install-bot.sh"
+grep -q 'remote/install-delegation.sh' "$PROJECT_ROOT/scripts/install-bot.sh"
+grep -Fq 'curl -fsSL https://raw.githubusercontent.com/swcstudiospace/grokrouter/main/scripts/install-bot.sh | bash -s --' "$PROJECT_ROOT/README.md"
 
 printf 'Installer and payload checks passed.\n'

@@ -324,6 +324,10 @@ except Exception:
     config = {}
 defaults = json.loads(defaults_path.read_text())
 config["grokBotVersion"] = os.environ["ROUTER_GROK_VERSION"]
+# This installer is the deprecated host adapter for Grok Bot 0.30.0-0.44.0; a
+# runtime it writes is an adapter runtime even over a delegation-mode install.
+for delegation_key in ("mode", "grokBotSupport", "delegationRunnerPath"):
+    config.pop(delegation_key, None)
 # Management tools patch an opted-in unreviewed version with its recorded
 # reviewed template; a reviewed install must drop any earlier opt-in.
 template_version = os.environ["ROUTER_TEMPLATE_MANIFEST_VERSION"]

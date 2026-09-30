@@ -1,6 +1,19 @@
 # Grok Bot version tracking
 
-Grok Bot auto-updates. GrokRouter treats every desktop version as a separate
+Grok Bot auto-updates. Two support tracks exist:
+
+- **Grok Bot 0.63.0 and newer: delegation mode.** The floor is
+  `delegation.minimumVersion` in `compatibility/supported-apps.json`; each
+  release that passes the live check is added to `delegation.verifiedVersions`.
+  Delegation mode never reads or patches the host, so a new version needs no
+  probe, manifest, or registry: the daily watch opens a "needs a delegation-mode
+  live check" issue (`scripts/check-grokbot-version.py --check` exits `3`) and
+  [DELEGATION-MODE.md](DELEGATION-MODE.md#when-grok-bot-updates) has the
+  checklist. Every stage below this list belongs to the other track.
+- **Grok Bot 0.30.0–0.44.0: the host adapter (deprecated).** Kept for those
+  versions only; no newer version will be added to it.
+
+For the adapter, GrokRouter treats every desktop version as a separate
 gate: a version listed in `compatibility/supported-apps.json` has its own
 manifest in `patch/manifests/` and its own signed host registry in
 `compatibility/`. Anything else is refused unless the user turns on the
@@ -34,9 +47,11 @@ turn with stock inference and ran the router's skills as ordinary skills.
 The bundles shipped next to the host (`sand-eval-runner.cjs`,
 `/exec-daemon/index.js`) do not start during a turn, and the desktop app's
 `app.asar` carries no turn loop, so on 0.62.0+ chat inference is no longer
-performed by the Bot computer's host at all. Until a live probe finds where
-those builds create inference sessions, treat 0.62.0+ as unsupported even
-though the opt-in installs cleanly.
+performed by the Bot computer's host at all. This is why the adapter track
+ends at 0.44.0: 0.63.0 and newer are served by
+[delegation mode](DELEGATION-MODE.md), which never touches the host. The
+opt-in still installs cleanly on those builds and routes nothing there; do
+not use it on 0.62.0+.
 
 Two tools make this visible instead of silent:
 

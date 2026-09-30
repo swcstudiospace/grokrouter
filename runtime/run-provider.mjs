@@ -30,7 +30,7 @@ const MAX_INPUT_BYTES = 50 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_IMAGES_PER_TURN = 4;
 const MAX_TOOLS = 128;
-const ROUTER_VERSION = "0.1.0-beta.48";
+export const ROUTER_VERSION = "0.1.0-beta.48";
 const COMPLETED_TURN_TTL_MS = 15 * 60_000;
 const ACTIVE_TURN_TTL_MS = 15 * 60_000;
 const CHANNEL_CONTROL_LATCH_TTL_MS = 30_000;
@@ -554,7 +554,7 @@ function jsonString(value) {
   }
 }
 
-function redactDiagnostic(value, limit = 500) {
+export function redactDiagnostic(value, limit = 500) {
   return String(value ?? "")
     .replace(/sk-or-v1-[a-z0-9_-]+|sk-[a-z0-9_-]+|gh[opsu]_[a-z0-9_-]+|xai-[a-z0-9_-]+|Bearer\s+[a-z0-9._-]+|ey[a-z0-9_-]{20,}\.[a-z0-9._-]+/gi, "[REDACTED]")
     .replace(/\s+/g, " ")
@@ -1379,7 +1379,7 @@ function validOpenRouterKey(value) {
   return /^sk-or-v1-[A-Za-z0-9_-]{24,}$/.test(value);
 }
 
-async function persistedOpenRouterKey(config) {
+export async function persistedOpenRouterKey(config) {
   const inherited = process.env.OPENROUTER_API_KEY?.trim();
   if (inherited) {
     if (!validOpenRouterKey(inherited)) {
@@ -1857,7 +1857,7 @@ function parseCodexResult(text) {
   return { text: responseText, toolCalls };
 }
 
-function codexThreadOptions(config) {
+export function codexThreadOptions(config) {
   const reasoning = ["minimal", "low", "medium", "high", "xhigh"].includes(config.codexReasoning)
     ? config.codexReasoning
     : "medium";
@@ -1873,7 +1873,7 @@ function codexThreadOptions(config) {
   };
 }
 
-const ANTHROPIC_EFFORT = { minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "xhigh" };
+export const ANTHROPIC_EFFORT = { minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "xhigh" };
 
 function anthropicPrompt(config, messages, tools, resuming) {
   return codexPrompt({ ...config, codexModel: config.anthropicModel || "claude-sonnet-5" }, messages, tools, resuming)
@@ -1881,7 +1881,7 @@ function anthropicPrompt(config, messages, tools, resuming) {
     .replace("Use Codex's native shell, file editing, and web tools", "Use Claude Code's native shell, file editing, and web tools");
 }
 
-async function createAnthropicQuery() {
+export async function createAnthropicQuery() {
   const { query } = await import("@anthropic-ai/claude-agent-sdk");
   return query;
 }
@@ -1948,7 +1948,7 @@ export async function runAnthropic(config, messages, tools, queryFactory = null)
   };
 }
 
-async function createCodexClient(config) {
+export async function createCodexClient(config) {
   const { Codex } = await import("@openai/codex-sdk");
   return new Codex(config.codexPathOverride ? { codexPathOverride: config.codexPathOverride } : {});
 }
@@ -2152,7 +2152,7 @@ async function mutateState(config, key, fallback, operation) {
   });
 }
 
-async function mergeState(config, key, fallback, patch) {
+export async function mergeState(config, key, fallback, patch) {
   return mutateState(config, key, fallback, (current) => ({ ...current, ...patch }));
 }
 
@@ -2280,7 +2280,7 @@ function legacyConversationKey(messages, sessionOptions) {
   return createHash("sha256").update(seed).digest("hex");
 }
 
-async function stateForTurn(config, messages, sessionOptions) {
+export async function stateForTurn(config, messages, sessionOptions) {
   const linkedKey = await linkedConversationKey(config, messages);
   const identity = conversationIdentity(messages, sessionOptions);
   const key = linkedKey ?? identity.key;
@@ -2323,7 +2323,7 @@ async function stateForTurn(config, messages, sessionOptions) {
   };
 }
 
-async function appendAudit(config, event) {
+export async function appendAudit(config, event) {
   const pathname = config.auditPath || join(runtimeDirectory, "audit.jsonl");
   try {
     await mkdir(dirname(pathname), { recursive: true });
@@ -2476,16 +2476,16 @@ function providerSpec(provider) {
   return PROVIDERS[provider] || PROVIDERS.codex;
 }
 
-function providerLabel(provider) {
+export function providerLabel(provider) {
   return providerSpec(provider).label;
 }
 
-function defaultModel(config, provider) {
+export function defaultModel(config, provider) {
   const spec = providerSpec(provider);
   return config[spec.modelKey] || spec.fallbackModel;
 }
 
-function defaultReasoning(config, provider) {
+export function defaultReasoning(config, provider) {
   return config[providerSpec(provider).reasoningKey] || "medium";
 }
 
@@ -2501,7 +2501,7 @@ function modelAliases(provider) {
   return providerSpec(provider).aliases;
 }
 
-async function doctorText(config, state) {
+export async function doctorText(config, state) {
   const checks = [];
   checks.push(`Router ${ROUTER_VERSION}: OK`);
   checks.push(`Provider: ${providerLabel(state.provider)} (${state.model})`);
@@ -2545,12 +2545,17 @@ async function doctorText(config, state) {
   }
   checks.push(`Model catalogs: ${freshness.join("; ")}`);
   checks.push(formatFailures(await recentFailures(config, 3)));
-  checks.push(`Grok tools: bridged on demand (${state.provider === "codex" || state.provider === "anthropic" ? "structured adapter" : "native function calls"})`);
-  checks.push("Run a real computer and sub-agent parity test before treating those capabilities as verified for a model.");
+  if (config.mode === "delegation") {
+    checks.push(`Delegated tasks: ${state.provider === "codex" || state.provider === "anthropic" ? "agentic SDK session" : "local shell/read/write/list tool loop"} in ${config.workingDirectory || "/workspace"}`);
+    checks.push("Grok Bot runs the conversation and its own tools; /route hands a task to the provider above and relays its report.");
+  } else {
+    checks.push(`Grok tools: bridged on demand (${state.provider === "codex" || state.provider === "anthropic" ? "structured adapter" : "native function calls"})`);
+    checks.push("Run a real computer and sub-agent parity test before treating those capabilities as verified for a model.");
+  }
   return checks.join("\n");
 }
 
-async function controlResult(config, key, state, input, catalogDependencies = {}) {
+export async function controlResult(config, key, state, input, catalogDependencies = {}) {
   const normalized = input.trim().replace(/\s+/g, " ");
   const command = normalized.toLowerCase();
   const persist = async (patch) => {
@@ -3153,7 +3158,7 @@ export async function runTurn(input, dependencies = {}) {
   return { ok: true, provider: state.provider, ...publicResult };
 }
 
-async function loadRuntimeConfig() {
+export async function loadRuntimeConfig() {
   const pathname = process.env.GROKBOT_ROUTER_CONFIG || join(runtimeDirectory, "provider.json");
   try {
     return JSON.parse(await readFile(pathname, "utf8"));

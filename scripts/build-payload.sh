@@ -25,6 +25,7 @@ trap cleanup EXIT
 
 mkdir -p "$BUILD_ROOT" "$PAYLOAD_ROOT/runtime" "$PAYLOAD_ROOT/patch/manifests" "$PAYLOAD_ROOT/patch/previous" "$PAYLOAD_ROOT/remote" "$PAYLOAD_ROOT/skills" "$PAYLOAD_ROOT/compatibility"
 cp "$PROJECT_ROOT/runtime/run-provider.mjs" "$PAYLOAD_ROOT/runtime/run-provider.mjs"
+cp "$PROJECT_ROOT/runtime/delegate.mjs" "$PAYLOAD_ROOT/runtime/delegate.mjs"
 cp "$PROJECT_ROOT/runtime/openrouter-catalog.mjs" "$PAYLOAD_ROOT/runtime/openrouter-catalog.mjs"
 cp "$PROJECT_ROOT/runtime/xai-oauth.mjs" "$PAYLOAD_ROOT/runtime/xai-oauth.mjs"
 cp "$PROJECT_ROOT/runtime/model-catalog.mjs" "$PAYLOAD_ROOT/runtime/model-catalog.mjs"
@@ -36,12 +37,13 @@ cp "$PROJECT_ROOT/patch/previous/"*.py "$PAYLOAD_ROOT/patch/previous/"
 cp "$PROJECT_ROOT/patch/manifests/"*.json "$PAYLOAD_ROOT/patch/manifests/"
 cp "$PROJECT_ROOT/compatibility/"*.json "$PROJECT_ROOT/compatibility/"*.sig "$PROJECT_ROOT/compatibility/registry-public-key.pem" "$PAYLOAD_ROOT/compatibility/"
 cp "$PROJECT_ROOT/remote/install.sh" "$PAYLOAD_ROOT/remote/install.sh"
+cp "$PROJECT_ROOT/remote/install-delegation.sh" "$PAYLOAD_ROOT/remote/install-delegation.sh"
 cp "$PROJECT_ROOT/remote/grokbot-router" "$PAYLOAD_ROOT/remote/grokbot-router"
 cp "$PROJECT_ROOT/remote/grokbot-router-watchdog" "$PAYLOAD_ROOT/remote/grokbot-router-watchdog"
 cp "$PROJECT_ROOT/remote/host-registry" "$PAYLOAD_ROOT/remote/host-registry"
 cp "$PROJECT_ROOT/remote/verify-host-registry.mjs" "$PAYLOAD_ROOT/remote/verify-host-registry.mjs"
 cp -R "$PROJECT_ROOT/skills/." "$PAYLOAD_ROOT/skills/"
-chmod 700 "$PAYLOAD_ROOT/remote/install.sh" "$PAYLOAD_ROOT/remote/grokbot-router" "$PAYLOAD_ROOT/remote/grokbot-router-watchdog" "$PAYLOAD_ROOT/remote/host-registry" "$PAYLOAD_ROOT/remote/verify-host-registry.mjs" "$PAYLOAD_ROOT/patch/router_patch.py"
+chmod 700 "$PAYLOAD_ROOT/remote/install.sh" "$PAYLOAD_ROOT/remote/install-delegation.sh" "$PAYLOAD_ROOT/remote/grokbot-router" "$PAYLOAD_ROOT/remote/grokbot-router-watchdog" "$PAYLOAD_ROOT/remote/host-registry" "$PAYLOAD_ROOT/remote/verify-host-registry.mjs" "$PAYLOAD_ROOT/patch/router_patch.py"
 printf '%s\n' "$VERSION" > "$PAYLOAD_ROOT/VERSION"
 
 (

@@ -15,14 +15,27 @@ PATCHER="$INSTALL_ROOT/patch/router_patch.py"
 HOST_REGISTRY_TOOL="$INSTALL_ROOT/bin/host-registry"
 # host-registry maps the recorded Grok Bot version to the patcher's manifest
 # and, for an opted-in unreviewed newer version, its explicit trust flag.
-VERSION_PATCH_TEXT="$("$HOST_REGISTRY_TOOL" patch-args)"
-# A read loop, not mapfile: the test suite also runs these under macOS bash 3.2.
+# Delegation mode (Grok Bot 0.63.0+) never touches the host, so the patch
+# arguments and registry are only resolved for the legacy adapter mode.
+ROUTER_MODE="$(python3 - "$CONFIG_PATH" <<'PY' 2>/dev/null || printf 'adapter'
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("mode") or "adapter")
+except Exception:
+    print("adapter")
+PY
+)"
 VERSION_PATCH_ARGS=()
-while IFS= read -r patch_arg; do VERSION_PATCH_ARGS+=("$patch_arg"); done <<< "$VERSION_PATCH_TEXT"
 UNREVIEWED_VERSION=""
-if [[ "${VERSION_PATCH_ARGS[2]:-}" == "--unreviewed-version" ]]; then
-  UNREVIEWED_VERSION="${VERSION_PATCH_ARGS[3]}"
+if [[ "$ROUTER_MODE" != "delegation" ]]; then
+  VERSION_PATCH_TEXT="$("$HOST_REGISTRY_TOOL" patch-args)"
+  # A read loop, not mapfile: the test suite also runs these under macOS bash 3.2.
+  while IFS= read -r patch_arg; do VERSION_PATCH_ARGS+=("$patch_arg"); done <<< "$VERSION_PATCH_TEXT"
+  if [[ "${VERSION_PATCH_ARGS[2]:-}" == "--unreviewed-version" ]]; then
+    UNREVIEWED_VERSION="${VERSION_PATCH_ARGS[3]}"
+  fi
 fi
+DELEGATION_RUNNER="$INSTALL_ROOT/delegate.mjs"
 CODEX_CLI="$INSTALL_ROOT/node_modules/.bin/codex"
 # The Claude Agent SDK ships one native binary per platform AND libc. Picking
 # the first glob match runs a musl build on a glibc box, which fails with
@@ -134,9 +147,14 @@ usage() {
     "GrokRouter" \
     "" \
     "Commands:" \
+    "  run --task TEXT [--provider P] [--model M] [--reasoning R] [--cwd DIR]" \
+    "                                 Delegate a task to this Bot's provider (Grok Bot 0.63.0+)" \
+    "  run --task-file FILE           Same, reading the task from a file (or stdin)" \
+    "  control \"/model ID\"           Apply an in-chat control to this Bot's delegation defaults" \
+    "  bot                            Show this Bot's active provider, model and reasoning" \
     "  status                         Show provider configuration" \
-    "  doctor                         Verify runtime, host patch, and credentials" \
-    "  repair [--no-restart]           Reapply the exact-gated host patch" \
+    "  doctor                         Verify runtime, host patch (adapter mode), and credentials" \
+    "  repair [--no-restart]           Reapply the exact-gated host patch (adapter mode)" \
     "  auth codex                     Start Codex device sign-in" \
     "  auth anthropic                 Start the Claude Agent SDK sign-in" \
     "  auth xai                       Start the xAI Grok subscription sign-in" \
@@ -148,7 +166,7 @@ usage() {
     "  model xai MODEL                Change the default xAI model" \
     "  enable | disable               Enable or bypass the router" \
     "  restart                        Restart Grok Bot's host process" \
-    "  uninstall                      Restore the verified stock host" \
+    "  uninstall                      Unregister the commands (delegation) or restore the stock host (adapter)" \
     "  errors [count]                 Explain the most recent router failures" \
     "  probe xai                      Report which request shapes xAI accepts" \
     "  logs                           Show redacted recent audit events"
@@ -201,6 +219,10 @@ PY
 }
 
 restart_host() {
+  if [[ "$ROUTER_MODE" == "delegation" ]]; then
+    printf 'Delegation mode: no host restart needed. The next /route task uses the updated defaults.\n'
+    return 0
+  fi
   pkill -f '/home/box/sand-host/host-main.cjs' >/dev/null 2>&1 || true
   printf 'Host restart requested. Grok Bot should reconnect automatically.\n'
   printf 'GROKBOT_ROUTER_RESTART_REQUESTED\n'
@@ -297,9 +319,34 @@ print(f"OpenRouter model: {config.get('openRouterModel', 'not configured')}")
 print(f"Anthropic model: {config.get('anthropicModel', 'not configured')}")
 print(f"xAI model: {config.get('xaiModel', 'not configured')}")
 PY
-    if [[ -n "$UNREVIEWED_VERSION" ]]; then
+    if [[ "$ROUTER_MODE" == "delegation" ]]; then
+      printf 'Mode: delegation (no host patch; /route delegates tasks to this Bot computer'"'"'s provider)\n'
+    elif [[ -n "$UNREVIEWED_VERSION" ]]; then
       printf 'Grok Bot mode: UNREVIEWED %s (experimental opt-in; structural host verification)\n' "$UNREVIEWED_VERSION"
     fi
+    ;;
+  run)
+    require_config
+    shift
+    GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" exec node "$DELEGATION_RUNNER" "$@"
+    ;;
+  control)
+    require_config
+    if [[ -z "${2:-}" ]]; then
+      printf 'ERROR: control needs the command text, for example: grokbot-router control "/model claude-opus-5-5"\n' >&2
+      exit 2
+    fi
+    if [[ -n "${3:-}" ]]; then
+      GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" exec node "$DELEGATION_RUNNER" --control "$2" --bot "$3"
+    fi
+    GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" exec node "$DELEGATION_RUNNER" --control "$2"
+    ;;
+  bot)
+    require_config
+    if [[ -n "${2:-}" ]]; then
+      GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" exec node "$DELEGATION_RUNNER" --status --bot "$2"
+    fi
+    GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" exec node "$DELEGATION_RUNNER" --status
     ;;
   doctor)
     require_config
@@ -313,6 +360,19 @@ PY
       printf 'FAILED\n'
       doctor_status=1
     fi
+    if [[ "$ROUTER_MODE" == "delegation" ]]; then
+      printf '  Delegation runner: '
+      if [[ -f "$DELEGATION_RUNNER" ]] && node --check "$DELEGATION_RUNNER" >/dev/null; then
+        printf 'OK\n'
+      else
+        printf 'FAILED\n'
+        doctor_status=1
+      fi
+      printf 'Mode\n'
+      printf '  delegation: Grok Bot %s runs the conversation; /route hands tasks to this Bot computer'"'"'s provider. The host is not patched.\n' "$(config_value grokBotVersion)"
+      printf 'This Bot\n'
+      GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" node "$DELEGATION_RUNNER" --status 2>&1 | sed 's/^/  /' || doctor_status=1
+    else
     printf 'Host adapter\n'
     if ! doctor_output="$(run_patch_doctor 2>&1)"; then
       refresh_registry_args || true
@@ -332,6 +392,7 @@ except Exception:
 print(str(value).upper())' <<< "$doctor_output")"
     if [[ -n "$UNREVIEWED_VERSION" ]]; then
       printf 'UNREVIEWED VERSION: Grok Bot %s is newer than every reviewed version. Its host is trusted by structural verification only (experimental opt-in); Restore Stock stays available.\n' "$UNREVIEWED_VERSION"
+    fi
     fi
     printf 'Codex\n'
     if [[ -x "$CODEX_CLI" ]]; then
@@ -369,15 +430,37 @@ else:
 PY
     printf 'Recent failures\n'
     GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" node "$PROVIDER_RUNNER" --recent-errors 3 2>&1 | sed 's/^/  /'
-    printf 'Host seam\n'
-    GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" node "$PROVIDER_RUNNER" --seam-status 2>&1 | sed 's/^/  /'
+    if [[ "$ROUTER_MODE" != "delegation" ]]; then
+      printf 'Host seam\n'
+      GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" node "$PROVIDER_RUNNER" --seam-status 2>&1 | sed 's/^/  /'
+    fi
     printf 'Native commands\n'
-    printf '  Registration is managed per Bot by the GrokRouter desktop installer.\n'
-    printf '  Run Repair in GrokRouter to sync Bots or channels created after installation.\n'
+    if [[ "$ROUTER_MODE" == "delegation" ]]; then
+      for skill_name in provider models model reasoning router doctor route; do
+        skill_link="$GROK_SKILLS_ROOT/$skill_name"
+        if [[ -L "$skill_link" && "$(readlink "$skill_link")" == "$INSTALL_ROOT/skills/$skill_name" ]]; then
+          printf '  /%s: linked\n' "$skill_name"
+        elif [[ -e "$skill_link" ]]; then
+          printf '  /%s: user-owned definition, not GrokRouter'"'"'s\n' "$skill_name"
+        else
+          printf '  /%s: MISSING (rerun the delegation installer)\n' "$skill_name"
+          doctor_status=1
+        fi
+      done
+    else
+      printf '  Registration is managed per Bot by the GrokRouter desktop installer.\n'
+      printf '  Run Repair in GrokRouter to sync Bots or channels created after installation.\n'
+    fi
     printf 'GROKBOT_ROUTER_DOCTOR_DONE\n'
     exit "$doctor_status"
     ;;
   repair)
+    if [[ "$ROUTER_MODE" == "delegation" ]]; then
+      require_config
+      update_config enabled true
+      printf 'Delegation mode does not patch the host; nothing to repair. Router enabled.\n'
+      exit 0
+    fi
     repair_host "${2:-}"
     ;;
   auth)
@@ -460,18 +543,45 @@ PY
     ;;
   enable)
     require_config
+    if [[ "$ROUTER_MODE" == "delegation" ]]; then
+      update_config enabled true
+      printf 'Router enabled (delegation mode).\n'
+      exit 0
+    fi
     repair_host
     ;;
   disable)
     require_config
     update_config enabled false
+    if [[ "$ROUTER_MODE" == "delegation" ]]; then
+      printf 'Router disabled (delegation mode). /route will refuse tasks until you run grokbot-router enable.\n'
+      exit 0
+    fi
     restart_host
     ;;
   restart)
+    if [[ "$ROUTER_MODE" == "delegation" ]]; then
+      printf 'Delegation mode does not patch or restart the host.\n'
+      exit 0
+    fi
     restart_host
     ;;
   uninstall)
     require_config
+    if [[ "$ROUTER_MODE" == "delegation" ]]; then
+      update_config enabled false
+      for skill_name in provider models model reasoning router doctor route; do
+        skill_source="$INSTALL_ROOT/skills/$skill_name"
+        skill_link="$GROK_SKILLS_ROOT/$skill_name"
+        if [[ -L "$skill_link" && "$(readlink "$skill_link")" == "$skill_source" ]]; then
+          rm "$skill_link"
+        fi
+      done
+      printf 'GROKBOT_ROUTER_UNINSTALL_OK\n'
+      printf 'Delegation mode never patched the host; the native commands were unregistered and the router is disabled.\n'
+      printf 'The runtime, credentials and audit log were retained under %s for recovery.\n' "$INSTALL_ROOT"
+      exit 0
+    fi
     update_config autoRepair false
     stop_watchdog
     run_patch_restore

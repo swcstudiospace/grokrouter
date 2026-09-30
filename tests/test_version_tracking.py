@@ -104,6 +104,11 @@ class FeedCheckTests(unittest.TestCase):
                 json.dumps({"grokBotVersion": version}))
         self.feed = self.root / "feed.json"
         self.feed.write_text(json.dumps({"version": "0.58.0"}))
+        self.supported_apps = self.root / "supported-apps.json"
+        self.supported_apps.write_text(json.dumps({
+            "versions": ["0.30.0", "0.44.0"],
+            "delegation": {"minimumVersion": "0.63.0", "verifiedVersions": ["0.63.0"]},
+        }))
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -111,7 +116,7 @@ class FeedCheckTests(unittest.TestCase):
     def run_check(self, *extra):
         return subprocess.run(
             [sys.executable, str(CHECK_SCRIPT), "--feed-url", self.feed.as_uri(),
-             "--manifests", str(self.manifests), *extra],
+             "--manifests", str(self.manifests), "--supported-apps", str(self.supported_apps), *extra],
             capture_output=True, text=True)
 
     def test_newer_feed_version_reports_unsupported(self):
@@ -119,7 +124,32 @@ class FeedCheckTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         report = json.loads(result.stdout)
         self.assertEqual(report["feedVersion"], "0.58.0")
+        self.assertEqual(report["mode"], "adapter")
         self.assertFalse(report["supportedFeed"])
+
+    def test_verified_delegation_version_passes_without_a_manifest(self):
+        self.feed.write_text(json.dumps({"version": "0.63.0"}))
+        result = self.run_check("--check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["mode"], "delegation")
+        self.assertTrue(report["supportedFeed"])
+
+    def test_unverified_delegation_version_asks_for_a_live_check_not_a_probe(self):
+        self.feed.write_text(json.dumps({"version": "0.64.0"}))
+        result = self.run_check("--check")
+        self.assertEqual(result.returncode, 3)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["mode"], "delegation")
+        self.assertFalse(report["supportedFeed"])
+        self.assertEqual(report["delegation"]["verifiedVersions"], ["0.63.0"])
+
+    def test_without_a_delegation_floor_every_new_version_is_an_adapter_version(self):
+        self.supported_apps.write_text(json.dumps({"versions": ["0.30.0", "0.44.0"]}))
+        self.feed.write_text(json.dumps({"version": "0.64.0"}))
+        result = self.run_check("--check")
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(json.loads(result.stdout)["mode"], "adapter")
 
     def test_supported_feed_version_passes(self):
         self.feed.write_text(json.dumps({"version": "0.44.0"}))
@@ -310,6 +340,18 @@ class ShippedGateConsistencyTests(unittest.TestCase):
         self.assertEqual(manifests, sorted(supported))
         swift = (PROJECT_ROOT / "installer" / "GrokBotRouterInstaller.swift").read_text()
         self.assertEqual(swift.split("GROK BOT ", 1)[1].split('"', 1)[0], " · ".join(supported))
+
+    def test_delegation_floor_sits_above_every_adapter_version_and_matches_the_installer(self):
+        apps = json.loads((PROJECT_ROOT / "compatibility" / "supported-apps.json").read_text())
+        floor = apps["delegation"]["minimumVersion"]
+        key = lambda value: tuple(int(part) for part in value.split("."))
+        for version in apps["versions"]:
+            self.assertGreater(key(floor), key(version))
+        for version in apps["delegation"]["verifiedVersions"]:
+            self.assertGreaterEqual(key(version), key(floor))
+        installer = (PROJECT_ROOT / "remote" / "install-delegation.sh").read_text()
+        self.assertIn(f'MINIMUM_GROK_VERSION="{floor}"', installer)
+        self.assertNotIn("router_patch.py", installer)
 
 
 if __name__ == "__main__":

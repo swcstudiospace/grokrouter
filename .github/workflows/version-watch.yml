@@ -1,9 +1,12 @@
 name: Grok Bot version watch
 
-# Polls the official Grok Bot stable feed once a day. When the feed reports a
-# version with no compatibility manifest it opens (or reuses) a tracking issue
-# and, when the self-hosted Bot-computer runner is enabled, drafts support by
-# itself:
+# Polls the official Grok Bot stable feed once a day. Grok Bot 0.63.0 and newer
+# run GrokRouter in delegation mode, which never touches the host: a new such
+# version only needs the live check in docs/DELEGATION-MODE.md, so the watch
+# opens (or reuses) a "needs a live check" issue and stops. For the deprecated
+# host-adapter versions below that floor, a feed version with no compatibility
+# manifest opens a tracking issue and, when the self-hosted Bot-computer runner
+# is enabled, drafts support by itself:
 #
 #   watch (GitHub-hosted)  -> feed check, tracking issue
 #   probe (self-hosted, inside a dedicated never-patched Grok Bot computer)
@@ -92,6 +95,32 @@ jobs:
           else
             url="$(gh issue create --title "$title" --body "$body")"
             echo "number=${url##*/}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Open or reuse the live-check issue for a new delegation-mode Grok Bot version
+        if: steps.check.outputs.exit == '3'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          title="Grok Bot $NEW_VERSION needs a delegation-mode live check"
+          body="$(cat <<EOF
+          The official stable feed now reports **Grok Bot $NEW_VERSION**. It is at or above the delegation-mode floor in \`compatibility/supported-apps.json\`, so GrokRouter does not need a host probe or manifest for it: delegation mode never reads or patches the Bot computer's host. It does need the live check before it is listed in \`delegation.verifiedVersions\`.
+
+          ## Live check (on a Mac with Grok Bot $NEW_VERSION)
+
+          Follow the checklist in \`docs/DELEGATION-MODE.md\`: install with the one-line Bot terminal command, run \`grokbot-router doctor\`, send \`/router doctor\`, \`/provider\`, and one \`/route\` task, and confirm the reply carries the \`[GrokRouter …]\` trailer and the audit log records \`delegation_ok\`.
+
+          ## Record it
+
+          Add \`$NEW_VERSION\` to \`delegation.verifiedVersions\` in \`compatibility/supported-apps.json\`, note the result in \`docs/TEST-MATRIX.md\`, and mention it in the README compatibility table. If any step fails, describe what Grok Bot changed here instead; the delegation design lists the only three things it depends on.
+          EOF
+          )"
+          existing="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')"
+          if [[ -n "$existing" ]]; then
+            echo "Live-check issue #$existing already open; leaving it in place."
+          else
+            gh issue create --title "$title" --body "$body"
           fi
       - name: Skip the probe when a draft PR branch already exists
         id: drafted

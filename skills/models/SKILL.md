@@ -1,16 +1,24 @@
 ---
 name: models
-description: List configured models or switch the current GrokRouter Bot to a model ID.
-argument-hint: "[vendor/model]"
+description: List this GrokRouter Bot's models or switch it to a model ID.
+argument-hint: "[free|all|search <text>|refresh|model-id]"
 user-invocable: true
 disable-model-invocation: true
 metadata:
   author: GrokRouter
-  short-description: List models or switch this Bot
+  short-description: List this GrokRouter Bot's models or switch it to a model ID.
 ---
 
-# GrokRouter model catalog
+# GrokRouter models control
 
 GROKROUTER_NATIVE_CONTROL: MODELS
 
-Use this only through its `/models` slash entry. Preserve the literal invocation and any model ID argument. GrokRouter intercepts the command before model inference and returns the authoritative catalog or switch receipt.
+On Grok Bot 0.30.0–0.44.0 GrokRouter intercepts this command before model inference and returns the authoritative receipt; the steps below are then never reached.
+
+On Grok Bot 0.63.0 and later (delegation mode) run this exactly, in this Bot's computer, with the user's argument text preserved:
+
+```
+/home/box/.local/bin/grokbot-router control "/models <argument or nothing>"
+```
+
+Reply with the command's standard output verbatim: same lines, same order, nothing added, nothing summarised. If the command exits non-zero, reply with its standard error verbatim instead.

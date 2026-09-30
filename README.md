@@ -13,6 +13,7 @@
 <p align="center">
   <img alt="Experimental project" src="https://img.shields.io/badge/status-experimental-ff6b2c?style=flat-square">
   <img alt="Grok Bot 0.30.0, 0.36.0 and 0.44.0" src="https://img.shields.io/badge/Grok_Bot-0.30.0_%7C_0.36.0_%7C_0.44.0-171717?style=flat-square">
+  <img alt="Grok Bot 0.63.0 and newer: delegation mode" src="https://img.shields.io/badge/Grok_Bot_0.63.0%2B-delegation_mode-1f7a3a?style=flat-square">
   <img alt="Grok Bot 0.61.0 experimental opt-in" src="https://img.shields.io/badge/Grok_Bot_0.61.0-experimental_opt--in-8a6d00?style=flat-square">
   <img alt="macOS Apple silicon" src="https://img.shields.io/badge/macOS-Apple_silicon-111111?style=flat-square&logo=apple">
   <img alt="Windows x64 and Arm64 preview" src="https://img.shields.io/badge/Windows-x64_%7C_Arm64_preview-0078d4?style=flat-square&logo=windows11">
@@ -36,6 +37,49 @@ You keep using the normal Grok Bot app. GrokRouter lets each Bot use a different
 
 Grok Bot still owns conversations, files, the computer, permissions, and the tools it offers the routed model. Native maintenance sessions such as memory synthesis keep Grok's original inference backend. **Restore Stock Grok Bot** puts the verified original inference path back.
 
+GrokRouter has two modes. **Delegation mode** is the current design for Grok Bot 0.63.0 and newer. The **host adapter** below it is the original design for Grok Bot 0.30.0–0.44.0; it is deprecated and receives no new version support.
+
+## Grok Bot 0.63.0 and newer: delegation mode
+
+Grok Bot 0.62.0 moved chat inference out of the Bot computer, so a host adapter has nothing to intercept there. From 0.63.0 GrokRouter runs in delegation mode: Grok keeps running the conversation and its own tools, and a native `/route` command hands a task to the provider you chose for that Bot (Codex, OpenRouter, Anthropic, or xAI). The provider works inside the Bot computer's `/workspace` with its own shell, file, and agent tools, and its report comes back into the chat verbatim with a `[GrokRouter …]` trailer naming the provider, model, reasoning level, and step count that produced it. Nothing on the Bot computer's host is read or modified, so there is no host probe, manifest, registry, or watchdog.
+
+### Install
+
+1. In Grok Bot, open the Bot's computer and its Terminal.
+2. Paste one line. This example makes Anthropic's Claude Opus 5.5 at `xhigh` reasoning the default; every option is optional.
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/swcstudiospace/grokrouter/main/scripts/install-bot.sh | bash -s -- --provider anthropic --anthropic-model claude-opus-5-5 --reasoning xhigh
+   ```
+
+3. Sign in to the providers you enabled, in the same terminal: `grokbot-router auth anthropic`, `grokbot-router auth codex`, or `grokbot-router auth xai`. OpenRouter reads `OPENROUTER_API_KEY` from Grok Bot's Secrets.
+4. In the Bot's chat, send `/router doctor`, then `/route <task>`.
+
+Options: `--provider`, `--providers codex,openrouter,anthropic,xai`, `--codex-model`, `--openrouter-model vendor/model`, `--anthropic-model`, `--xai-model`, `--reasoning minimal|low|medium|high|xhigh`, `--workspace DIR`, `--grok-version X.Y.Z`. `GROKROUTER_REF=<tag or branch>` in front of the command installs a version other than `main`. Running the same line again upgrades in place and keeps every Bot's selections, provider threads, and audit log.
+
+### Use it
+
+| Command | What it does |
+| --- | --- |
+| `/route <task>` | Delegate the task to this Bot's provider and relay its report. Grok may also invoke it itself for tasks that belong to the delegated model. |
+| `/provider`, `/model`, `/models`, `/reasoning`, `/router`, `/doctor` | The same controls as in the [Use it](#use-it) table; each runs `grokbot-router control` in the Bot computer and relays its receipt. |
+
+To confirm which model did the work: every `/route` report ends with `[GrokRouter <version> · Anthropic · claude-opus-5-5 · xhigh · N steps · Ns]`; `grokbot-router logs` in the Bot terminal shows the `delegation_start` and `delegation_ok` events with the same provider and model; `/router doctor` shows the Bot's active selection. A reply without the trailer came from Grok itself.
+
+In the Bot computer:
+
+```bash
+grokbot-router status | doctor | bot | logs
+grokbot-router run --task "…"                  # exactly what /route runs
+grokbot-router control "/model claude-opus-5-5"
+grokbot-router disable | enable
+grokbot-router uninstall                       # unregister the commands; nothing on the host to restore
+```
+
+### When Grok Bot updates
+
+Delegation mode depends only on the Bot computer's terminal, Node.js, and `~/.grok/skills`, so a new Grok Bot version needs a live check rather than a host probe. Each checked release is recorded in `compatibility/supported-apps.json` under `delegation.verifiedVersions`; [docs/DELEGATION-MODE.md](docs/DELEGATION-MODE.md) has the checklist and the design.
+
 ## Compatibility
 
 Every Grok Bot desktop version is a separate gate. A version is reviewed only from a host probe run inside a Bot computer on that version: the Bot-computer host is not in the desktop download (the 0.61.0 DMG's `app.asar` contains no host anchors).
@@ -46,7 +90,8 @@ Every Grok Bot desktop version is a separate gate. A version is reviewed only fr
 | 0.36.0 | Supported | Exact reviewed host. All seven live gates passed on Mac in upstream beta.47 (September 9, 2026). |
 | 0.44.0 | Reviewed host, live acceptance pending | Exact host hash and byte count from a live probe on 2026-09-07, with a signed registry. Beta.47 added three mandatory patch seams (group member dispatch, memory-extraction executor, episode-summary executor) that no 0.44.0 probe has proven yet, and no fresh-Bot acceptance has run. |
 | 0.58.0, 0.59.1, 0.61.0 | Not reviewed; [experimental opt-in](#unreviewed-grok-bot-versions) only | Shipped on the stable feed (0.61.0 is current for Mac arm64 and Windows x64/arm64). No host probe has been reviewed and no live run has been recorded. |
-| 0.62.0, 0.63.0 | Not routable | A live 0.63.0 probe (2026-09-30) shows every anchor and patch seam present once and the patched host verifying and running, yet chat turns never enter the host's `createSession` seam: no `seam_hit`, no audit event, no bridge error, while the stock model answers every turn and runs the router's skills. The Bot computer's host no longer performs chat inference on these builds, so the opt-in installs cleanly but routes nothing. `grokbot-router doctor` now prints the host-seam status so this is visible instead of silent. |
+| 0.63.0 and newer | Supported in [delegation mode](#grok-bot-0630-and-newer-delegation-mode) | Verified: 0.63.0. A live 0.63.0 probe (2026-09-30) showed every host anchor present and the patched host running, yet chat turns never enter the host's `createSession` seam: the Bot computer no longer performs chat inference on these builds, so the adapter routes nothing there. Delegation mode replaces it and never touches the host. |
+| 0.62.0 | Not supported | Same host behaviour as 0.63.0; delegation mode starts at 0.63.0, the first version it was checked on. |
 | Any other version | Refused | Older and in-between versions are always refused, even with the opt-in. |
 
 | Component | Current boundary |
@@ -60,6 +105,10 @@ Every Grok Bot desktop version is a separate gate. A version is reviewed only fr
 | Computer and sub-agents | Available only when Grok offers the necessary schemas; see the [verification matrix](docs/TEST-MATRIX.md) for provider-specific evidence |
 
 The desktop version and the cloud host are separate checks. A supported app can still receive an unknown host, which the installer leaves untouched. See [compatibility reports](https://github.com/swcstudiospace/grokrouter/issues?q=is%3Aissue+is%3Aopen+label%3Acompatibility).
+
+## Legacy host adapter (Grok Bot 0.30.0–0.44.0, deprecated)
+
+Everything from here to [Use it](#use-it) describes the original host-adapter design: a desktop app patches the Bot computer's inference host so that chat turns are routed before they reach Grok's model. It only works on Grok Bot 0.30.0, 0.36.0, and 0.44.0, it is kept for those versions, and it will not be extended to newer ones. On Grok Bot 0.63.0 or newer use [delegation mode](#grok-bot-0630-and-newer-delegation-mode) instead.
 
 ## Install on a Mac
 
@@ -152,7 +201,7 @@ The untouched host is backed up before patching. Doctor reports `HOSTTRUST=UNREV
 
 ## Use it
 
-Type these into a Bot's normal chat box. The installer publishes native slash entries for `/provider`, `/models`, `/model`, `/reasoning`, `/router`, and `/doctor`; the router handles every recognized command before model inference, so no model sees it.
+Type these into a Bot's normal chat box. Both modes publish native slash entries for `/provider`, `/models`, `/model`, `/reasoning`, `/router`, and `/doctor`. In the host adapter the router handles every recognized command before model inference, so no model sees it; in delegation mode Grok runs `grokbot-router control` in the Bot computer and relays the receipt, and `/route` delegates the task itself.
 
 | Command | What it does |
 | --- | --- |
