@@ -22,7 +22,7 @@ First release candidate from the maintained fork `swcstudiospace/grokrouter`. Pe
 - Fresh-Bot acceptance of this candidate on 0.30.0 and 0.36.0.
 - A live 0.44.0 probe proving the three beta.47 patch seams, and 0.44.0 fresh-Bot acceptance.
 - A reviewed host probe for 0.58.0, 0.59.1, or 0.61.0.
-- Delegation mode with Codex, OpenRouter, or xAI as the delegated provider on a live Bot computer. The Anthropic path passed on Grok Bot 0.63.0 (Ship Desk, 2026-09-30): one-line install and upgrade, Doctor, Mac-side command registration, and native `/route` and `/provider` in chat returning `PONG` with `[GrokRouter 0.1.0-beta.48 · Anthropic · claude-opus-5-5 · xhigh · 2 steps · 5s]` and a `delegation_ok` audit event.
+- Delegation mode with Codex, OpenRouter, or xAI as the delegated provider on a live Bot computer. The Anthropic path passed on Grok Bot 0.63.0 (Ship Desk, 2026-09-30): one-line install and upgrade, Doctor, Mac-side command registration, and native `/route` and `/provider` in chat returning `PONG` with `[GrokRouter 0.1.0-beta.48 · Anthropic · claude-opus-5-5 · xhigh · 2 steps · 5s]` and a `delegation_ok` audit event; the zero-Grok chat answered from Opus 5.5 in the Bot computer's browser the same day.
 - The unreviewed-version opt-in on a live Bot computer (run on 0.63.0: installs, routes nothing; see the delegation entry).
 - Windows native install, restore, and fresh-Bot acceptance; the new Windows CI smoke has not run yet.
 - Live Codex account catalog refresh; Anthropic and xAI provider runs; live registry refresh with the new key.
