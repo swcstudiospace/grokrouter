@@ -33,6 +33,9 @@ ANTHROPIC_MODEL_EXPLICIT=0
 XAI_MODEL_EXPLICIT=0
 WORKSPACE_EXPLICIT=0
 MANAGE_LEGACY=1
+START_CHAT=1
+CHAT_PORT="${ROUTER_CHAT_PORT:-7878}"
+CHAT_AUTOSTART="${ROUTER_CHAT_AUTOSTART:-/home/box/.config/autostart/grokbot-router-chat.desktop}"
 GROK_SKILLS_ROOT="${ROUTER_GROK_SKILLS_ROOT:-/home/box/.grok/skills}"
 INSTALL_ATTEMPT="${ROUTER_INSTALL_ATTEMPT:-LOCAL}"
 INSTALL_PHASE="OPTIONS"
@@ -80,6 +83,7 @@ usage() {
     "  --reasoning minimal|low|medium|high|xhigh" \
     "                               Default reasoning effort for the default provider" \
     "  --workspace DIR              Directory delegated tasks run in (default /workspace)" \
+    "  --no-chat                    Do not start the zero-Grok chat UI (grokbot-router serve)" \
     "  --install-root PATH          Development/testing only"
 }
 
@@ -127,6 +131,10 @@ while [[ $# -gt 0 ]]; do
       WORKSPACE="${2:?missing workspace directory}"
       WORKSPACE_EXPLICIT=1
       shift 2
+      ;;
+    --no-chat)
+      START_CHAT=0
+      shift
       ;;
     --install-root)
       INSTALL_ROOT="${2:?missing install root}"
@@ -243,6 +251,8 @@ fi
 for required in \
   "$PAYLOAD_ROOT/runtime/run-provider.mjs" \
   "$PAYLOAD_ROOT/runtime/delegate.mjs" \
+  "$PAYLOAD_ROOT/runtime/serve.mjs" \
+  "$PAYLOAD_ROOT/runtime/chat.html" \
   "$PAYLOAD_ROOT/runtime/openrouter-catalog.mjs" \
   "$PAYLOAD_ROOT/runtime/xai-oauth.mjs" \
   "$PAYLOAD_ROOT/runtime/model-catalog.mjs" \
@@ -264,6 +274,8 @@ emit_phase "PREPARE_RUNTIME"
 printf '[2/7] Preparing isolated runtime\n'
 cp "$PAYLOAD_ROOT/runtime/run-provider.mjs" "$STAGE_ROOT/run-provider.mjs"
 cp "$PAYLOAD_ROOT/runtime/delegate.mjs" "$STAGE_ROOT/delegate.mjs"
+cp "$PAYLOAD_ROOT/runtime/serve.mjs" "$STAGE_ROOT/serve.mjs"
+cp "$PAYLOAD_ROOT/runtime/chat.html" "$STAGE_ROOT/chat.html"
 cp "$PAYLOAD_ROOT/runtime/openrouter-catalog.mjs" "$STAGE_ROOT/openrouter-catalog.mjs"
 cp "$PAYLOAD_ROOT/runtime/xai-oauth.mjs" "$STAGE_ROOT/xai-oauth.mjs"
 cp "$PAYLOAD_ROOT/runtime/model-catalog.mjs" "$STAGE_ROOT/model-catalog.mjs"
@@ -461,14 +473,15 @@ python3 - "$INSTALL_ROOT" "$STAGE_ROOT" <<'PYSTATE'
 from pathlib import Path
 import shutil, sys
 source, destination = map(Path, sys.argv[1:])
-for name in ("conversation-states.json", "audit.jsonl", "audit.jsonl.1"):
+for name in ("conversation-states.json", "audit.jsonl", "audit.jsonl.1", "chat-token"):
     existing = source / name
     if existing.is_file():
         shutil.copy2(existing, destination / name)
-existing = source / "conversation-states"
-if existing.is_dir():
-    shutil.copytree(existing, destination / "conversation-states",
-                    ignore=shutil.ignore_patterns("*.lock", "*.tmp"))
+for name in ("conversation-states", "chats"):
+    existing = source / name
+    if existing.is_dir():
+        shutil.copytree(existing, destination / name,
+                        ignore=shutil.ignore_patterns("*.lock", "*.tmp"))
 PYSTATE
 
 emit_phase "ACTIVATE_RUNTIME"
@@ -541,7 +554,7 @@ fi
 
 emit_phase "VERIFY_INSTALL"
 printf '[6/7] Final verification\n'
-if ! node --check "$INSTALL_ROOT/run-provider.mjs" || ! node --check "$INSTALL_ROOT/delegate.mjs"; then
+if ! node --check "$INSTALL_ROOT/run-provider.mjs" || ! node --check "$INSTALL_ROOT/delegate.mjs" || ! node --check "$INSTALL_ROOT/serve.mjs"; then
   rollback_runtime
   fail_install "RUNTIME_SYNTAX" "the installed runtime does not parse; the previous runtime was restored"
 fi
@@ -551,6 +564,30 @@ if ! BOT_STATUS="$("$INSTALL_ROOT/bin/grokbot-router" bot 2>&1)"; then
   fail_install "RUNNER_UNUSABLE" "the delegation runner could not read this Bot's configuration; the previous runtime was restored"
 fi
 printf 'This Bot: %s\n' "$BOT_STATUS"
+
+# The zero-Grok chat UI: served by this runtime on 127.0.0.1, reachable from
+# the Bot computer's own browser (or a tunnel), and restarted with the desktop.
+CHAT_URL=""
+if [[ "$START_CHAT" == "1" ]]; then
+  if ROUTER_CHAT_PORT="$CHAT_PORT" "$INSTALL_ROOT/bin/grokbot-router" serve --daemon >"$INSTALL_PARENT/.grokbot-router-chat-start.log" 2>&1; then
+    CHAT_URL="$(ROUTER_CHAT_PORT="$CHAT_PORT" "$INSTALL_ROOT/bin/grokbot-router" serve --url)"
+    if [[ "$MANAGE_LEGACY" == "1" ]]; then
+      mkdir -p "$(dirname "$CHAT_AUTOSTART")"
+      cat > "$CHAT_AUTOSTART" <<EOF
+[Desktop Entry]
+Type=Application
+Name=GrokRouter Chat
+Exec=$INSTALL_ROOT/bin/grokbot-router serve --daemon
+X-GNOME-Autostart-enabled=true
+NoDisplay=true
+EOF
+    fi
+  else
+    printf 'WARNING: the chat UI did not start; run grokbot-router serve --daemon after fixing the reason below\n' >&2
+    cat "$INSTALL_PARENT/.grokbot-router-chat-start.log" >&2 || true
+  fi
+  rm -f "$INSTALL_PARENT/.grokbot-router-chat-start.log"
+fi
 
 ROUTER_INSTALL_ROOT="$INSTALL_ROOT" python3 - <<'PY'
 import os
@@ -586,6 +623,9 @@ if [[ "$ENABLED_PROVIDERS" == *xai* ]]; then
 fi
 if [[ "$ENABLED_PROVIDERS" == *openrouter* ]]; then
   printf 'OpenRouter uses the OPENROUTER_API_KEY saved through Grok Bot Secrets.\n'
+fi
+if [[ -n "$CHAT_URL" ]]; then
+  printf 'Zero-Grok chat: open %s in this Bot computer'"'"'s browser (grokbot-router chat prints it again).\n' "$CHAT_URL"
 fi
 printf 'Then, in the Terminal of the Mac or PC that runs Grok Bot, register the slash commands:\n'
 printf '  curl -fsSL https://raw.githubusercontent.com/swcstudiospace/grokrouter/main/scripts/register-commands.sh | bash\n'

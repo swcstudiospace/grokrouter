@@ -36,6 +36,12 @@ if [[ "$ROUTER_MODE" != "delegation" ]]; then
   fi
 fi
 DELEGATION_RUNNER="$INSTALL_ROOT/delegate.mjs"
+CHAT_SERVER="$INSTALL_ROOT/serve.mjs"
+ROUTER_CHAT_PORT="${ROUTER_CHAT_PORT:-7878}"
+ROUTER_CHAT_HOST="${ROUTER_CHAT_HOST:-127.0.0.1}"
+chat_pid_file="$(dirname "$INSTALL_ROOT")/grokbot-router-chat.pid"
+chat_log_file="$(dirname "$INSTALL_ROOT")/grokbot-router-chat.log"
+chat_autostart="${ROUTER_CHAT_AUTOSTART:-/home/box/.config/autostart/grokbot-router-chat.desktop}"
 CODEX_CLI="$INSTALL_ROOT/node_modules/.bin/codex"
 # The Claude Agent SDK ships one native binary per platform AND libc. Picking
 # the first glob match runs a musl build on a glibc box, which fails with
@@ -152,6 +158,9 @@ usage() {
     "  run --task-file FILE           Same, reading the task from a file (or stdin)" \
     "  control \"/model ID\"           Apply an in-chat control to this Bot's delegation defaults" \
     "  bot                            Show this Bot's active provider, model and reasoning" \
+    "  serve [--daemon|--stop|--url|--status]" \
+    "                                 Run the zero-Grok chat UI for this Bot computer (Grok Bot 0.63.0+)" \
+    "  chat                           Print the chat UI link (same as serve --url)" \
     "  status                         Show provider configuration" \
     "  doctor                         Verify runtime, host patch (adapter mode), and credentials" \
     "  repair [--no-restart]           Reapply the exact-gated host patch (adapter mode)" \
@@ -216,6 +225,51 @@ temporary.write_text(json.dumps(config, indent=2) + "\n")
 temporary.chmod(0o600)
 temporary.replace(path)
 PY
+}
+
+chat_url() {
+  GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" node "$CHAT_SERVER" --url --port "$ROUTER_CHAT_PORT" --host "$ROUTER_CHAT_HOST"
+}
+
+chat_server_pid() {
+  local pid
+  [[ -f "$chat_pid_file" ]] || return 1
+  pid="$(cat "$chat_pid_file" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" >/dev/null 2>&1 || return 1
+  printf '%s\n' "$pid"
+}
+
+stop_chat_server() {
+  local pid
+  if pid="$(chat_server_pid)"; then
+    kill "$pid" >/dev/null 2>&1 || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      kill -0 "$pid" >/dev/null 2>&1 || break
+      sleep 0.1
+    done
+  fi
+  rm -f "$chat_pid_file"
+}
+
+start_chat_server() {
+  stop_chat_server
+  nohup env GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" node "$CHAT_SERVER" --port "$ROUTER_CHAT_PORT" --host "$ROUTER_CHAT_HOST" \
+    >"$chat_log_file" 2>&1 &
+  printf '%s\n' "$!" > "$chat_pid_file"
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    if grep -q 'listening on' "$chat_log_file" 2>/dev/null; then
+      return 0
+    fi
+    if ! kill -0 "$(cat "$chat_pid_file")" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.25
+  done
+  printf 'ERROR: the chat server did not start:\n' >&2
+  tail -n 5 "$chat_log_file" >&2 2>/dev/null || true
+  rm -f "$chat_pid_file"
+  return 1
 }
 
 restart_host() {
@@ -348,6 +402,43 @@ PY
     fi
     GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" exec node "$DELEGATION_RUNNER" --status
     ;;
+  serve|chat)
+    require_config
+    if [[ ! -f "$CHAT_SERVER" ]]; then
+      printf 'ERROR: the chat server is not installed; run the delegation installer again\n' >&2
+      exit 1
+    fi
+    chat_action="${2:-}"
+    [[ "$command_name" == "chat" ]] && chat_action="--url"
+    case "$chat_action" in
+      --url)
+        chat_url
+        ;;
+      --status)
+        if pid="$(chat_server_pid)"; then
+          printf 'Chat server running (pid %s): %s\n' "$pid" "$(chat_url)"
+        else
+          printf 'Chat server not running. Start it with: grokbot-router serve --daemon\n'
+          exit 1
+        fi
+        ;;
+      --stop)
+        stop_chat_server
+        printf 'Chat server stopped.\n'
+        ;;
+      --daemon)
+        start_chat_server
+        printf 'Chat server running: %s\n' "$(chat_url)"
+        ;;
+      "")
+        exec env GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" node "$CHAT_SERVER" --port "$ROUTER_CHAT_PORT" --host "$ROUTER_CHAT_HOST"
+        ;;
+      *)
+        printf 'ERROR: serve accepts --daemon, --stop, --url, --status, or nothing (foreground)\n' >&2
+        exit 2
+        ;;
+    esac
+    ;;
   doctor)
     require_config
     doctor_status=0
@@ -372,6 +463,14 @@ PY
       printf '  delegation: Grok Bot %s runs the conversation; /route hands tasks to this Bot computer'"'"'s provider. The host is not patched.\n' "$(config_value grokBotVersion)"
       printf 'This Bot\n'
       GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" node "$DELEGATION_RUNNER" --status 2>&1 | sed 's/^/  /' || doctor_status=1
+      printf 'Chat server\n'
+      if [[ -f "$CHAT_SERVER" ]] && pid="$(chat_server_pid)"; then
+        printf '  running (pid %s): %s\n' "$pid" "$(chat_url)"
+      elif [[ -f "$CHAT_SERVER" ]]; then
+        printf '  not running; start it with grokbot-router serve --daemon\n'
+      else
+        printf '  not installed\n'
+      fi
     else
     printf 'Host adapter\n'
     if ! doctor_output="$(run_patch_doctor 2>&1)"; then
@@ -570,6 +669,8 @@ PY
     require_config
     if [[ "$ROUTER_MODE" == "delegation" ]]; then
       update_config enabled false
+      stop_chat_server
+      rm -f "$chat_autostart"
       for skill_name in provider models model reasoning router doctor route; do
         skill_source="$INSTALL_ROOT/skills/$skill_name"
         skill_link="$GROK_SKILLS_ROOT/$skill_name"

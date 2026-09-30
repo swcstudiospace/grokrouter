@@ -245,6 +245,9 @@ shasum -a 256 -c "$ARCHIVE.sha256" >/dev/null
 
 TEMPORARY="$(mktemp -d -t grokbot-router-test.XXXXXX)"
 cleanup() {
+  if [[ -f "$TEMPORARY/grokbot-router-chat.pid" ]]; then
+    kill "$(cat "$TEMPORARY/grokbot-router-chat.pid")" >/dev/null 2>&1 || true
+  fi
   rm -rf "$TEMPORARY"
 }
 trap cleanup EXIT
@@ -279,6 +282,8 @@ for skill_name in provider models model reasoning router doctor; do
 done
 [[ -x "$PAYLOAD/remote/install-delegation.sh" ]]
 [[ -f "$PAYLOAD/runtime/delegate.mjs" ]]
+[[ -f "$PAYLOAD/runtime/serve.mjs" ]]
+[[ -f "$PAYLOAD/runtime/chat.html" ]]
 grep -Fq "ROUTER_VERSION=\"$PAYLOAD_VERSION\"" "$PAYLOAD/remote/install-delegation.sh"
 DELEGATION_MINIMUM="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["delegation"]["minimumVersion"])' "$PROJECT_ROOT/compatibility/supported-apps.json")"
 grep -Fq "MINIMUM_GROK_VERSION=\"$DELEGATION_MINIMUM\"" "$PAYLOAD/remote/install-delegation.sh"
@@ -655,6 +660,9 @@ for rejected_option in "--provider gemini INVALID_PROVIDER" "--providers codex,g
 done
 mkdir -p "$DELEGATION_SKILLS/reasoning"
 printf 'user-owned\n' > "$DELEGATION_SKILLS/reasoning/KEEP"
+CHAT_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
+CHAT_AUTOSTART="$TEMPORARY/grokbot-router-chat.desktop"
+export ROUTER_CHAT_PORT="$CHAT_PORT" ROUTER_CHAT_AUTOSTART="$CHAT_AUTOSTART"
 ROUTER_PATCH_HOST="$DELEGATION_HOST" \
 ROUTER_BIN_DIR="$DELEGATION_BIN" \
 ROUTER_GROK_SKILLS_ROOT="$DELEGATION_SKILLS" \
@@ -675,6 +683,23 @@ grep -q 'Payload integrity manifest verified' "$TEMPORARY/install-delegation.log
 grep -q 'Mode: delegation (Grok Bot 0.63.0; the host is not patched)' "$TEMPORARY/install-delegation.log"
 grep -q 'OpenRouter is active for this bot. Model: anthropic/claude-opus-5.5. Reasoning: xhigh.' "$TEMPORARY/install-delegation.log"
 ! grep -q 'GROKROUTER_DELEG3_PHASE_APPLY_ADAPTER' "$TEMPORARY/install-delegation.log"
+# The zero-Grok chat UI starts with the runtime, needs the token, and is
+# stopped by uninstall. The autostart entry is only written on a real install.
+grep -q "Zero-Grok chat: open http://127.0.0.1:$CHAT_PORT/?token=" "$TEMPORARY/install-delegation.log"
+[[ ! -e "$CHAT_AUTOSTART" ]]
+[[ -f "$TEMPORARY/grokbot-router-chat.pid" ]]
+CHAT_TOKEN="$(cat "$DELEGATION_RUNTIME/chat-token")"
+[[ "$CHAT_TOKEN" =~ ^[A-Za-z0-9_-]{16,}$ ]]
+grep -q "http://127.0.0.1:$CHAT_PORT/?token=$CHAT_TOKEN" <<<"$("$DELEGATION_BIN/grokbot-router" chat)"
+grep -q 'Chat server running' <<<"$("$DELEGATION_BIN/grokbot-router" serve --status)"
+[[ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$CHAT_PORT/api/health")" == "401" ]]
+grep -q '"mode":"delegation"' <<<"$(curl -s -H "Authorization: Bearer $CHAT_TOKEN" "http://127.0.0.1:$CHAT_PORT/api/health")"
+grep -q 'GrokRouter Chat' <<<"$(curl -s "http://127.0.0.1:$CHAT_PORT/")"
+CHAT_CREATED="$(curl -s -X POST -H "Authorization: Bearer $CHAT_TOKEN" -H 'content-type: application/json' -d '{}' "http://127.0.0.1:$CHAT_PORT/api/chats")"
+grep -q '"provider":"openrouter"' <<<"$CHAT_CREATED"
+CHAT_ID="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["chat"]["id"])' "$CHAT_CREATED")"
+grep -q 'to xAI (grok-4.6)' <<<"$(curl -s -X POST -H "Authorization: Bearer $CHAT_TOKEN" -H 'content-type: application/json' -d '{"text":"/provider xai"}' "http://127.0.0.1:$CHAT_PORT/api/chats/$CHAT_ID/messages")"
+grep -q 'xAI is active for this bot' <<<"$("$DELEGATION_BIN/grokbot-router" bot "chat:$CHAT_ID")"
 cmp "$HOST_FIXTURE" "$DELEGATION_HOST"
 [[ ! -d "$DELEGATION_RUNTIME/node_modules" ]]
 [[ ! -e "$DELEGATION_RUNTIME/patch" ]]
@@ -737,6 +762,8 @@ grep -q 'Delegated tasks: local shell/read/write/list tool loop in /workspace' <
 ROUTER_GROK_SKILLS_ROOT="$DELEGATION_SKILLS" "$DELEGATION_BIN/grokbot-router" doctor >"$TEMPORARY/delegation-doctor.log" 2>&1
 grep -q 'Delegation runner: OK' "$TEMPORARY/delegation-doctor.log"
 grep -q 'xAI is active for this bot' "$TEMPORARY/delegation-doctor.log"
+grep -q "Chat server" "$TEMPORARY/delegation-doctor.log"
+grep -q "running (pid" "$TEMPORARY/delegation-doctor.log"
 grep -q '/route: linked' "$TEMPORARY/delegation-doctor.log"
 grep -q '/reasoning: user-owned definition' "$TEMPORARY/delegation-doctor.log"
 grep -q 'GROKBOT_ROUTER_DOCTOR_DONE' "$TEMPORARY/delegation-doctor.log"
@@ -753,6 +780,9 @@ ROUTER_GROK_SKILLS_ROOT="$DELEGATION_SKILLS" \
 bash "$PAYLOAD/remote/install-delegation.sh" --install-root "$DELEGATION_RUNTIME" >"$TEMPORARY/install-delegation-upgrade.log" 2>&1
 grep -q 'GROKBOT_ROUTER_INSTALL_OK' "$TEMPORARY/install-delegation-upgrade.log"
 cmp "$PAYLOAD/runtime/delegate.mjs" "$DELEGATION_RUNTIME/delegate.mjs"
+[[ "$(cat "$DELEGATION_RUNTIME/chat-token")" == "$CHAT_TOKEN" ]]
+[[ -f "$DELEGATION_RUNTIME/chats/$CHAT_ID.json" ]]
+grep -q 'Chat server running' <<<"$("$DELEGATION_BIN/grokbot-router" serve --status)"
 cmp "$TEMPORARY/delegation-pre-upgrade-audit" "$DELEGATION_RUNTIME/audit.jsonl"
 grep -q 'xAI is active for this bot. Model: grok-4.6. Reasoning: xhigh.' <<<"$("$DELEGATION_BIN/grokbot-router" bot)"
 grep -q 'Default provider: openrouter' <<<"$("$DELEGATION_BIN/grokbot-router" status)"
@@ -761,6 +791,11 @@ grep -q 'Grok Bot version: 0.63.0' <<<"$("$DELEGATION_BIN/grokbot-router" status
 
 ROUTER_GROK_SKILLS_ROOT="$DELEGATION_SKILLS" "$DELEGATION_BIN/grokbot-router" uninstall >"$TEMPORARY/delegation-uninstall.log"
 grep -q 'GROKBOT_ROUTER_UNINSTALL_OK' "$TEMPORARY/delegation-uninstall.log"
+[[ ! -f "$TEMPORARY/grokbot-router-chat.pid" ]]
+if "$DELEGATION_BIN/grokbot-router" serve --status >/dev/null 2>&1; then
+  echo 'Uninstall must stop the chat server' >&2
+  exit 1
+fi
 for skill_name in provider models model router doctor route; do
   [[ ! -e "$DELEGATION_SKILLS/$skill_name" && ! -L "$DELEGATION_SKILLS/$skill_name" ]]
 done
@@ -773,7 +808,8 @@ cmp "$HOST_FIXTURE" "$DELEGATION_HOST"
 BOOTSTRAP_RUNTIME="$TEMPORARY/bootstrap-runtime"
 ROUTER_BIN_DIR="$TEMPORARY/bootstrap-bin" \
 ROUTER_GROK_SKILLS_ROOT="$TEMPORARY/bootstrap-grok-skills" \
-bash "$PROJECT_ROOT/scripts/install-bot.sh" --install-root "$BOOTSTRAP_RUNTIME" --provider xai --providers xai >"$TEMPORARY/install-bot.log" 2>&1
+bash "$PROJECT_ROOT/scripts/install-bot.sh" --install-root "$BOOTSTRAP_RUNTIME" --provider xai --providers xai --no-chat >"$TEMPORARY/install-bot.log" 2>&1
+! grep -q 'Zero-Grok chat' "$TEMPORARY/install-bot.log"
 grep -q 'GROKBOT_ROUTER_INSTALL_OK' "$TEMPORARY/install-bot.log"
 grep -q 'Source checkout: no payload integrity manifest to verify' "$TEMPORARY/install-bot.log"
 grep -q 'Default provider: xai' <<<"$("$TEMPORARY/bootstrap-bin/grokbot-router" status)"

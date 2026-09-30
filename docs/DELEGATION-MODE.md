@@ -66,9 +66,29 @@ touches Grok's usage.
 The saving is therefore proportional to the task. A task that would take Grok
 thirty tool iterations is one dispatch turn instead of thirty; a one-line
 answer saves nothing, and the `PONG` acceptance check in particular only shows
-the cost side. To spend no Grok usage at all, run `grokbot-router run` from
-the Bot terminal (or any other client of the Bot computer) and change
-settings with `grokbot-router control` there instead of the chat controls.
+the cost side.
+
+To spend no Grok usage at all, use GrokRouter's own chat instead of Grok
+Bot's. `runtime/serve.mjs` (`grokbot-router serve`) is a small HTTP server on
+`127.0.0.1:7878` in the Bot computer that serves `runtime/chat.html` and a
+JSON/SSE API. Each chat has its own per-chat selection (`chat:<id>` in the same
+per-Bot state store), so `/provider`, `/model`, `/reasoning`, `/router` and
+`/doctor` work exactly as in Grok's chat; every other message runs through
+`runDelegation` in chat mode: the Anthropic and Codex paths resume their
+session or thread for continuity, the OpenRouter and xAI tool loop is given the
+transcript as prior turns, and the reply carries the same trailer. Transcripts
+live under `chats/` next to the state store; the token lives in `chat-token`
+(0600) and is required on every API call. The installer starts the server,
+records an XDG autostart entry so it returns with the Bot desktop, and prints
+the link; `grokbot-router chat` prints it again, `serve --status|--stop|--daemon`
+manages it, and uninstall stops it. Nothing in it touches Grok's host, app, or
+servers: it is a client of the Bot computer only.
+
+The server is reachable inside the Bot computer (its own Chrome, via the
+Computer view). Reaching it from another machine is a tunnel the user
+controls (`ssh -R` from the Bot computer to a server they own, or a Cloudflare
+tunnel); the token still gates every request, and the server never binds to
+a public interface by itself.
 
 ## What it depends on
 

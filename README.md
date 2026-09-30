@@ -70,6 +70,10 @@ Options for the Bot install: `--provider`, `--providers codex,openrouter,anthrop
 | `/route <task>` | Delegate the task to this Bot's provider and relay its report. Grok may also invoke it itself for tasks that belong to the delegated model. |
 | `/provider`, `/model`, `/models`, `/reasoning`, `/router`, `/doctor` | The same controls as in the [Use it](#use-it) table; each runs `grokbot-router control` in the Bot computer and relays its receipt. |
 
+### Zero Grok usage: GrokRouter's own chat
+
+The delegation installer also starts a chat UI served by the runtime inside the Bot computer. Open the link it prints (or run `grokbot-router chat` in the Bot terminal to print it again) in the Bot computer's browser: every message goes straight to the Bot's provider on your own plan, with the same `/provider`, `/model`, `/reasoning`, `/router` and `/doctor` controls, per-chat transcripts, and the same trailer under each reply. No Grok turn is spent, because Grok Bot's chat is not involved. The server binds to `127.0.0.1` and requires the token in that link; `grokbot-router serve --status|--stop|--daemon` manages it, it restarts with the Bot desktop, and `--no-chat` on the installer skips it. To use it from your Mac's browser instead of the Bot computer's, forward the port over a tunnel you control (for example `ssh -R` to a server, or a Cloudflare tunnel) and keep the token private.
+
 What delegation does and does not save: Grok still runs every chat turn on its own servers (on 0.62.0+ the Bot computer is only a tool sandbox, so no router can change that), and each `/route` costs one Grok turn in which Grok reads the command, runs one shell command, and relays the output. The delegated model does the task itself on its own plan. The saving is everything Grok would otherwise have done inside the task: a thirty-step coding job is one Grok turn instead of thirty, while a one-line question saves nothing. Settings changed from the Bot terminal (`grokbot-router control "/model …"`) cost no Grok usage at all; the chat controls cost one turn each.
 
 To confirm which model did the work: every `/route` report ends with `[GrokRouter <version> · Anthropic · claude-opus-5-5 · xhigh · N steps · Ns]`; `grokbot-router logs` in the Bot terminal shows the `delegation_start` and `delegation_ok` events with the same provider and model; `/router doctor` shows the Bot's active selection. A reply without the trailer came from Grok itself.
@@ -78,6 +82,8 @@ In the Bot computer:
 
 ```bash
 grokbot-router status | doctor | bot | logs
+grokbot-router chat                            # print the zero-Grok chat link
+grokbot-router serve --status | --stop | --daemon
 grokbot-router run --task "…"                  # exactly what /route runs
 grokbot-router control "/model claude-opus-5-5"
 grokbot-router disable | enable

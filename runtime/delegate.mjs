@@ -202,7 +202,20 @@ export async function executeLocalTool(call, { cwd, spawnImpl } = {}) {
   }
 }
 
-function delegationSystemPrompt(cwd, provider, model) {
+const CHAT_GUIDANCE = [
+  "You are the assistant behind a GrokRouter chat that runs inside a Grok Bot computer (Linux); the person is talking to you directly and Grok is not involved.",
+  "Answer conversationally and to the point. Use the shell, files and browser only when the request needs them, and say what you did when you do.",
+  "You may ask a short clarifying question when the request is ambiguous.",
+].join(" ");
+
+function delegationSystemPrompt(cwd, provider, model, mode = "task") {
+  if (mode === "chat") {
+    return [
+      CHAT_GUIDANCE,
+      `Working directory: ${cwd}. Provider: ${providerLabel(provider)}; model: ${model}.`,
+      "Tools: shell, read_file, write_file and list_dir. Never print tool-call markup as text; call tools natively.",
+    ].join(" ");
+  }
   return [
     "You are the engineer that GrokRouter delegated this task to. You are working inside a Grok Bot computer (Linux).",
     `Working directory: ${cwd}. Provider: ${providerLabel(provider)}; model: ${model}.`,
@@ -210,6 +223,19 @@ function delegationSystemPrompt(cwd, provider, model) {
     "Do not ask the user questions; make reasonable assumptions and state them. Never print tool-call markup as text; call tools natively.",
     "When the task is complete, reply with a concise plain-text report: what you did, which files changed, and how it was verified.",
   ].join(" ");
+}
+
+const HISTORY_MESSAGE_LIMIT = 24;
+const HISTORY_CHARACTER_LIMIT = 60_000;
+
+export function conversationHistory(entries) {
+  const turns = (Array.isArray(entries) ? entries : [])
+    .filter((entry) => (entry?.role === "user" || entry?.role === "assistant") && typeof entry.content === "string" && entry.content.trim())
+    .slice(-HISTORY_MESSAGE_LIMIT)
+    .map((entry) => ({ role: entry.role, content: entry.content.slice(0, 12_000) }));
+  let total = turns.reduce((sum, turn) => sum + turn.content.length, 0);
+  while (turns.length && total > HISTORY_CHARACTER_LIMIT) total -= turns.shift().content.length;
+  return turns;
 }
 
 async function xaiDelegationBaseUrl(config, model) {
@@ -297,10 +323,13 @@ export async function runToolLoop({
   spawnImpl,
   onProgress = () => {},
   sleep = (ms) => new Promise((done) => setTimeout(done, ms)),
+  history = [],
+  mode = "task",
 }) {
   const transport = { label: providerLabel(providerId), ...(await toolLoopTransport(config, providerId, model, reasoning, fetchImpl)) };
   const messages = [
-    { role: "system", content: delegationSystemPrompt(cwd, providerId, model) },
+    { role: "system", content: delegationSystemPrompt(cwd, providerId, model, mode) },
+    ...conversationHistory(history),
     { role: "user", content: task },
   ];
   let toolCalls = 0;
@@ -343,7 +372,7 @@ function summarizeArguments(raw) {
   }
 }
 
-export async function runAnthropicDelegation({ config, task, model, reasoning, cwd, previous, queryFactory, onProgress = () => {} }) {
+export async function runAnthropicDelegation({ config, task, model, reasoning, cwd, previous, queryFactory, onProgress = () => {}, mode = "task" }) {
   const query = queryFactory ? queryFactory() : await createAnthropicQuery();
   const resumable = previous?.sessionId && previous.model === model ? previous.sessionId : null;
   const options = {
@@ -352,6 +381,7 @@ export async function runAnthropicDelegation({ config, task, model, reasoning, c
     effort: ANTHROPIC_EFFORT[reasoning] || "medium",
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
+    ...(mode === "chat" ? { systemPrompt: { type: "preset", preset: "claude_code", append: CHAT_GUIDANCE } } : {}),
     ...(config.anthropicExecutablePath ? { pathToClaudeCodeExecutable: config.anthropicExecutablePath } : {}),
     ...(resumable ? { resume: resumable } : {}),
     env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: `grokrouter/${ROUTER_VERSION}` },
@@ -392,18 +422,19 @@ export async function runAnthropicDelegation({ config, task, model, reasoning, c
   return { text: outcome.finalText.trim(), steps: outcome.steps, thread: { sessionId: outcome.sessionId, model } };
 }
 
-export async function runCodexDelegation({ config, task, model, reasoning, cwd, previous, codexFactory, onProgress = () => {} }) {
+export async function runCodexDelegation({ config, task, model, reasoning, cwd, previous, codexFactory, onProgress = () => {}, mode = "task" }) {
   const codex = codexFactory ? codexFactory() : await createCodexClient(config);
   const options = codexThreadOptions({ ...config, codexModel: model, codexReasoning: reasoning, workingDirectory: cwd, nativeTextTask: false });
   const resumable = previous?.threadId && previous.model === model ? previous.threadId : null;
+  const prompt = mode === "chat" && !resumable ? `${CHAT_GUIDANCE}\n\n${task}` : task;
   let thread = resumable ? codex.resumeThread(resumable, options) : codex.startThread(options);
   let turn;
   try {
-    turn = await thread.run(task);
+    turn = await thread.run(prompt);
   } catch (error) {
     if (!resumable) throw error;
     thread = codex.startThread(options);
-    turn = await thread.run(task);
+    turn = await thread.run(prompt);
   }
   const items = Array.isArray(turn?.items) ? turn.items : [];
   for (const item of items) {
@@ -430,20 +461,22 @@ export async function runDelegation(input, dependencies = {}) {
   const cwd = input.cwd || config.workingDirectory || "/workspace";
   const previous = input.fresh ? null : state.delegation?.[provider] || null;
   const onProgress = dependencies.onProgress || (() => {});
-  const receipt = { botId, sessionId: state.sessionId, provider, model, reasoning, cwd, taskChars: task.length };
+  const mode = input.mode === "chat" ? "chat" : "task";
+  const receipt = { botId, sessionId: state.sessionId, provider, model, reasoning, cwd, taskChars: task.length, mode };
   const startedAt = Date.now();
   await appendAudit(config, { event: "delegation_start", ...receipt });
   let outcome;
   try {
     if (provider === "anthropic") {
-      outcome = await runAnthropicDelegation({ config, task, model, reasoning, cwd, previous, queryFactory: dependencies.anthropicQueryFactory, onProgress });
+      outcome = await runAnthropicDelegation({ config, task, model, reasoning, cwd, previous, queryFactory: dependencies.anthropicQueryFactory, onProgress, mode });
     } else if (provider === "codex") {
-      outcome = await runCodexDelegation({ config, task, model, reasoning, cwd, previous, codexFactory: dependencies.codexFactory, onProgress });
+      outcome = await runCodexDelegation({ config, task, model, reasoning, cwd, previous, codexFactory: dependencies.codexFactory, onProgress, mode });
     } else {
       outcome = await runToolLoop({
         config, providerId: provider, task, model, reasoning, cwd,
         maxSteps: Number(input.maxSteps) > 0 ? Number(input.maxSteps) : DEFAULT_MAX_STEPS,
         fetchImpl: dependencies.fetchImpl, spawnImpl: dependencies.spawnImpl, onProgress, sleep: dependencies.sleep,
+        history: input.history, mode,
       });
     }
   } catch (error) {

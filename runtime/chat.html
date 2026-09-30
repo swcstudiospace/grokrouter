@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GrokRouter Chat</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f6f4; --panel: #ffffff; --ink: #1c1c1a; --muted: #6b6b66; --line: #e3e3de;
+    --user: #1c1c1a; --user-ink: #ffffff; --accent: #ff6b2c; --code: #f0f0ec; --error: #b3261e;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #141412; --panel: #1d1d1a; --ink: #ececea; --muted: #9a9a94; --line: #2c2c28; --user: #ececea; --user-ink: #141412; --code: #262622; --error: #ff8a80; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font: 15px/1.5 var(--sans); background: var(--bg); color: var(--ink); display: grid; grid-template-columns: 260px 1fr; }
+  aside { border-right: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
+  aside header { padding: 16px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
+  aside header strong { font-size: 14px; letter-spacing: .02em; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #chats { overflow: auto; flex: 1; padding: 8px; }
+  #chats a { display: block; padding: 10px 12px; border-radius: 8px; color: inherit; text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #chats a.active, #chats a:hover { background: var(--bg); }
+  #chats small { display: block; color: var(--muted); font-size: 12px; }
+  aside footer { padding: 12px 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+  main { display: flex; flex-direction: column; min-height: 0; }
+  main header { padding: 12px 20px; border-bottom: 1px solid var(--line); display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  main header h1 { font-size: 15px; margin: 0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #status { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  #messages { flex: 1; overflow: auto; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+  .msg { max-width: 780px; padding: 10px 14px; border-radius: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg.user { align-self: flex-end; background: var(--user); color: var(--user-ink); }
+  .msg.assistant { align-self: flex-start; background: var(--panel); border: 1px solid var(--line); }
+  .msg.control { align-self: flex-start; background: var(--panel); border: 1px dashed var(--line); font-family: var(--mono); font-size: 13px; }
+  .msg.error { align-self: flex-start; color: var(--error); border: 1px solid var(--error); }
+  .msg pre { background: var(--code); padding: 10px; border-radius: 8px; overflow: auto; font: 13px/1.45 var(--mono); margin: 8px 0; white-space: pre; }
+  .msg code { font: 13px var(--mono); background: var(--code); padding: 1px 4px; border-radius: 4px; }
+  .msg pre code { background: none; padding: 0; }
+  .trailer { display: block; margin-top: 6px; color: var(--muted); font: 12px var(--mono); }
+  #progress { align-self: flex-start; color: var(--muted); font: 12px/1.6 var(--mono); white-space: pre-wrap; display: none; }
+  form { border-top: 1px solid var(--line); padding: 12px 20px 16px; display: flex; gap: 10px; align-items: flex-end; background: var(--panel); }
+  textarea { flex: 1; resize: none; font: inherit; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--ink); min-height: 44px; max-height: 220px; }
+  textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  #empty { margin: auto; max-width: 520px; color: var(--muted); text-align: center; }
+  #empty code { font-family: var(--mono); }
+  @media (max-width: 720px) { body { grid-template-columns: 1fr; } aside { display: none; } }
+</style>
+</head>
+<body>
+<aside>
+  <header><strong>GrokRouter</strong><button id="new" class="primary">New chat</button></header>
+  <nav id="chats"></nav>
+  <footer id="footer">Opus, Codex, OpenRouter or xAI — on your own plans, inside this Bot computer. No Grok turn is spent here.</footer>
+</aside>
+<main>
+  <header><h1 id="title">Chat</h1><span id="status"></span><button id="delete" title="Delete this chat">Delete</button></header>
+  <section id="messages"><div id="empty">Start a chat, or send <code>/router help</code> for the controls. Messages that start with <code>/</code> change this chat's provider, model, or reasoning without spending anything.</div></section>
+  <form id="composer"><textarea id="input" rows="1" placeholder="Message this Bot computer's model…"></textarea><button id="send" class="primary" type="submit">Send</button></form>
+</main>
+<script>
+(() => {
+  const params = new URLSearchParams(location.search);
+  let token = params.get("token") || "";
+  try {
+    if (token) localStorage.setItem("grokrouter-chat-token", token);
+    else token = localStorage.getItem("grokrouter-chat-token") || "";
+  } catch {}
+  if (params.has("token")) history.replaceState(null, "", location.pathname);
+  const headers = () => ({ "content-type": "application/json", authorization: `Bearer ${token}` });
+  const $ = (selector) => document.querySelector(selector);
+  const chatsNode = $("#chats"), messagesNode = $("#messages"), statusNode = $("#status"), titleNode = $("#title"), input = $("#input"), sendButton = $("#send");
+  let current = null, working = false;
+
+  const escapeHtml = (text) => text.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  function render(text) {
+    const parts = String(text).split(/```/);
+    return parts.map((part, index) => {
+      if (index % 2 === 1) {
+        const body = part.replace(/^[a-z0-9_-]*\n/i, "");
+        return `<pre><code>${escapeHtml(body)}</code></pre>`;
+      }
+      return escapeHtml(part)
+        .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+        .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+    }).join("");
+  }
+  function addMessage(entry) {
+    $("#empty")?.remove();
+    const node = document.createElement("div");
+    node.className = `msg ${entry.role}`;
+    node.innerHTML = render(entry.text || "");
+    if (entry.trailer) {
+      const trailer = document.createElement("span");
+      trailer.className = "trailer";
+      trailer.textContent = entry.trailer;
+      node.appendChild(trailer);
+    }
+    messagesNode.appendChild(node);
+    messagesNode.scrollTop = messagesNode.scrollHeight;
+  }
+  function setStatus(status) {
+    if (!status) return;
+    statusNode.textContent = `${status.providerLabel} · ${status.model} · ${status.reasoning}`;
+  }
+  function progressNode() {
+    let node = $("#progress");
+    if (!node) {
+      node = document.createElement("div");
+      node.id = "progress";
+      messagesNode.appendChild(node);
+    }
+    node.style.display = "block";
+    return node;
+  }
+  async function api(path, options = {}) {
+    const response = await fetch(path, { ...options, headers: { ...headers(), ...(options.headers || {}) } });
+    if (response.status === 401) throw new Error("This page needs the chat link that grokbot-router serve --url prints (it carries the token).");
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
+    return payload;
+  }
+  async function loadChats() {
+    const { chats } = await api("/api/chats");
+    chatsNode.innerHTML = "";
+    for (const chat of chats) {
+      const link = document.createElement("a");
+      link.href = "#";
+      link.className = chat.id === current ? "active" : "";
+      link.innerHTML = `${escapeHtml(chat.title)}<small>${chat.messages} messages</small>`;
+      link.onclick = (event) => { event.preventDefault(); openChat(chat.id); };
+      chatsNode.appendChild(link);
+    }
+    return chats;
+  }
+  async function openChat(id) {
+    const { chat, status, busy } = await api(`/api/chats/${id}`);
+    current = id;
+    working = Boolean(busy);
+    titleNode.textContent = chat.title;
+    messagesNode.innerHTML = "";
+    if (!chat.messages.length) messagesNode.innerHTML = '<div id="empty">Say hello, or send <code>/router help</code>.</div>';
+    for (const entry of chat.messages) addMessage(entry);
+    setStatus(status);
+    await loadChats();
+    input.focus();
+  }
+  async function newChat() {
+    const { chat, status } = await api("/api/chats", { method: "POST", body: "{}" });
+    current = chat.id;
+    titleNode.textContent = chat.title;
+    messagesNode.innerHTML = '<div id="empty">Say hello, or send <code>/router help</code>.</div>';
+    setStatus(status);
+    await loadChats();
+    input.focus();
+  }
+  async function send(text) {
+    if (!current) await newChat();
+    working = true;
+    sendButton.disabled = true;
+    const progress = progressNode();
+    progress.textContent = text.startsWith("/") ? "" : "Working…";
+    try {
+      const response = await fetch(`/api/chats/${current}/messages`, { method: "POST", headers: headers(), body: JSON.stringify({ text }) });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || `Request failed (${response.status})`);
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let boundary;
+        while ((boundary = buffer.indexOf("\n\n")) >= 0) {
+          const frame = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          const event = frame.match(/^event: (.+)$/m)?.[1];
+          const data = frame.match(/^data: (.+)$/m)?.[1];
+          if (!event || !data) continue;
+          const payload = JSON.parse(data);
+          if (event === "progress") {
+            progress.textContent += (progress.textContent ? "\n" : "") + payload.line;
+            messagesNode.scrollTop = messagesNode.scrollHeight;
+          } else if (event === "message") {
+            if (payload.role !== "user") { progress.style.display = "none"; progress.textContent = ""; }
+            addMessage(payload);
+          } else if (event === "done") {
+            setStatus(payload.status);
+          }
+        }
+      }
+    } catch (error) {
+      addMessage({ role: "error", text: error.message });
+    } finally {
+      const node = $("#progress");
+      if (node) { node.style.display = "none"; node.textContent = ""; }
+      working = false;
+      sendButton.disabled = false;
+      titleNode.textContent = (await loadChats()).find((chat) => chat.id === current)?.title || titleNode.textContent;
+      input.focus();
+    }
+  }
+  $("#composer").onsubmit = (event) => {
+    event.preventDefault();
+    const text = input.value.trim();
+    if (!text || working) return;
+    input.value = "";
+    input.style.height = "";
+    send(text);
+  };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); $("#composer").requestSubmit(); }
+  });
+  input.addEventListener("input", () => { input.style.height = ""; input.style.height = `${Math.min(input.scrollHeight, 220)}px`; });
+  $("#new").onclick = () => newChat().catch((error) => addMessage({ role: "error", text: error.message }));
+  $("#delete").onclick = async () => {
+    if (!current || working) return;
+    await api(`/api/chats/${current}`, { method: "DELETE" }).catch((error) => addMessage({ role: "error", text: error.message }));
+    current = null;
+    titleNode.textContent = "Chat";
+    statusNode.textContent = "";
+    messagesNode.innerHTML = '<div id="empty">Start a chat, or send <code>/router help</code>.</div>';
+    await loadChats();
+  };
+  (async () => {
+    try {
+      const health = await api("/api/health");
+      $("#footer").textContent = `GrokRouter ${health.version} · delegation mode · providers: ${health.providers.join(", ")}`;
+      const chats = await loadChats();
+      if (chats.length) await openChat(chats[0].id);
+    } catch (error) {
+      addMessage({ role: "error", text: error.message });
+    }
+  })();
+})();
+</script>
+</body>
+</html>
