@@ -19,7 +19,7 @@ Open items:
 | Live 0.44.0 probe proving beta.47's three patch seams, then fresh-Bot acceptance | Pending |
 | Live 0.61.0 host probe (self-hosted `grokbot-box` runner or manual) and review | Pending; 0.61.0 is usable only through the experimental opt-in |
 | Live check of the unreviewed-version opt-in on a newer Grok Bot | Run on 0.63.0 (2026-09-30): the opt-in installs, verifies and repairs correctly, but the host seam is never reached, so nothing routes; see [VERSION-TRACKING.md](VERSION-TRACKING.md#when-every-anchor-counts-once-and-nothing-routes). Closed by design: 0.63.0+ is served by [delegation mode](DELEGATION-MODE.md) and the adapter track ends at 0.44.0. |
-| Delegation mode (0.63.0+) live check | Bot-terminal path passed on Ship Desk (2026-09-30): install, upgrade, doctor, and a `grokbot-router run` on `claude-opus-5-5`/`xhigh` with the trailer and `delegation_ok`. Pending: the Mac-side `register-commands.sh` run and a chat `/route` carrying the trailer |
+| Delegation mode (0.63.0+) live check | Passed on Ship Desk (2026-09-30): one-line Bot install and in-place upgrade, doctor, `grokbot-router run` on `claude-opus-5-5`/`xhigh`, Mac-side command registration (7 commands, 55 Bots and channels), and native `/route` and `/provider` in chat with the trailer and `delegation_ok`. Codex, OpenRouter, and xAI delegation runs are still to be exercised live |
 | Windows native install and fresh-Bot acceptance; first run of the new Windows source-installer CI smoke | Pending |
 | Live Codex account catalog refresh, Anthropic and xAI provider runs | Pending |
 | Beta.48 acceptance record, then the `source-v0.1.0-beta.48` tag | Pending acceptance |
