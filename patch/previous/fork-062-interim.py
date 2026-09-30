@@ -1,3 +1,4 @@
+# Provenance: swcstudiospace/grokrouter fork working tree after 9ce7e87, patch/router_patch.py as deployed to Bot computers with the Grok Bot 0.62.0 opt-in before the tool-executor adapter; retained verbatim only to authenticate upgrades.
 #!/usr/bin/env python3
 """Version-gated, reversible Grok Bot host adapter patch.
 
@@ -64,8 +65,6 @@ PATCH_ANCHORS = (
     "const extraction = await extractMemories({",
     "const narrative = await summarizeEpisode({",
 )
-TOOL_EXECUTOR_STREAM_MARKER = "executeModelStreamOnly("
-TOOL_EXECUTOR_ADAPTER_ANCHOR = "var SimplePromptToolExecutor = class {"
 
 
 EXECUTOR_CODE = r'''
@@ -322,14 +321,10 @@ SESSION_CODE = r'''
           : "codex";
         const modelId = routerDefaults[provider];
         return {
-          getExecutor: (taskOptions) => {
-            const textTask = taskOptions && typeof taskOptions === "object" ? taskOptions.grokBotRouterTextTask : void 0;
-            const executor = createGrokBotRouterPromptExecutor(grokBotRouterConfig, {
-              ...sessionOptions,
-              ...(["memory-extraction", "episode-summary"].includes(textTask) ? { grokBotRouterTextTask: textTask } : {})
-            });
-            return typeof SimplePromptToolExecutor === "function" ? new SimplePromptToolExecutor(executor) : executor;
-          },
+          getExecutor: (taskOptions = {}) => createGrokBotRouterPromptExecutor(grokBotRouterConfig, {
+            ...sessionOptions,
+            ...(["memory-extraction", "episode-summary"].includes(taskOptions.grokBotRouterTextTask) ? { grokBotRouterTextTask: taskOptions.grokBotRouterTextTask } : {})
+          }),
           getModelId: () => modelId
         };
       }
@@ -806,12 +801,6 @@ def patch_text(source: str) -> str:
     )
     if session_count != 1:
         raise PatchError(f"Session anchor count was {session_count}; expected 1")
-    if TOOL_EXECUTOR_STREAM_MARKER in source:
-        adapter_count = source.count(TOOL_EXECUTOR_ADAPTER_ANCHOR)
-        if adapter_count != 1:
-            raise PatchError(
-                f"Tool-executor adapter anchor count was {adapter_count}; expected 1 on a host that streams through executeModelStreamOnly"
-            )
 
     # `resolveBoxId()` is already evaluated immediately before Grok creates the
     # primary inference session. In Grok Bot 0.30.0 it is the only stable,

@@ -105,7 +105,15 @@ def select_anchors(probe: dict) -> tuple[list[str] | None, str]:
         if counts.get(anchor) != 1:
             problems.append(f"{anchor!r} appears {counts.get(anchor, 0)} times")
         selected.append(anchor)
+    group_variants = list(HOST_PROBE.GROUP_DISPATCH_ANCHORS)
+    once_groups = [anchor for anchor in group_variants if patch_counts.get(anchor) == 1]
+    stray_groups = [anchor for anchor in group_variants if patch_counts.get(anchor, 0) not in (0, 1)]
+    if len(once_groups) != 1 or stray_groups:
+        problems.append("group-dispatch dialect counts " + json.dumps(
+            {anchor: patch_counts.get(anchor, 0) for anchor in group_variants}))
     for anchor in HOST_PROBE.PATCH_ANCHORS:
+        if anchor in group_variants:
+            continue
         if patch_counts.get(anchor) != 1:
             problems.append(f"patch seam {anchor!r} appears {patch_counts.get(anchor, 0)} times")
     if problems:
@@ -182,7 +190,10 @@ def main() -> int:
         "versionHints": hints,
         "anchors": {},
         "mockAnchors": {},
-        "patchAnchors": {anchor: 1 for anchor in HOST_PROBE.PATCH_ANCHORS},
+        "patchAnchors": {
+            anchor: (probe.get("patchAnchors") or {}).get(anchor, 0)
+            for anchor in (*HOST_PROBE.PATCH_ANCHORS, *HOST_PROBE.GROUP_DISPATCH_ANCHORS)
+        },
         "customAnchors": {anchor: 1 for anchor in anchors},
         "candidates": {"routerMarker": []},
     }

@@ -134,7 +134,12 @@ def main() -> int:
     seams = probe.get("patchAnchors")
     if not isinstance(seams, dict):
         return fail("probe lacks patchAnchors; re-run the current host-probe.py")
+    group_counts = tuple(seams.get(anchor, 0) for anchor in patcher.GROUP_DISPATCH_ANCHORS)
+    if group_counts not in ((1, 0), (0, 1)):
+        return fail(f"group-dispatch dialects appear {group_counts}, need exactly one of them once")
     for anchor in patcher.PATCH_ANCHORS:
+        if anchor in patcher.GROUP_DISPATCH_ANCHORS:
+            continue
         if seams.get(anchor) != 1:
             return fail(f"patch seam {anchor!r} appears {seams.get(anchor, 0)} times, need exactly once")
 

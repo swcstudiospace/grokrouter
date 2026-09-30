@@ -31,12 +31,40 @@ KNOWN_MOCK_ANCHORS = [
 ]
 # Seams the patch hooks in every version beyond the manifest anchors (group
 # member dispatch, memory extraction, episode summary). Keep in step with
-# PATCH_ANCHORS in patch/router_patch.py; this probe stays a single file so it
-# can be copied into a Bot terminal on its own.
-PATCH_ANCHORS = [
+# PATCH_ANCHORS in patch/router_patch.py. Group dispatch has two dialects;
+# exactly one must count once. This probe stays a single file so it can be
+# copied into a Bot terminal on its own.
+GROUP_DISPATCH_ANCHORS = [
     "const memberResult = await runner.run(promptForAttempt, {",
+    "const memberResult = await this.tm.turnRuntime.runAgentTurn(",
+]
+PATCH_ANCHORS = [
+    GROUP_DISPATCH_ANCHORS[0],
     "const extraction = await extractMemories({",
     "const narrative = await summarizeEpisode({",
+]
+# Grok Bot 0.62.0+ hosts drive turns through a newer loop. These count where
+# that loop, its session factory, and the executor adapters live so a seam can
+# be chosen for a build whose createSession hook is no longer on the path.
+TURN_LOOP_ANCHORS = [
+    "rootPromptExecutor.executeModelStreamOnly(",
+    "function createCursorInferencePromptSession(options2)",
+    "createCursorInferencePromptSession(",
+    "inference.createSession(",
+    "sanitizePromptSessionUsage(",
+    "streamModelAndCollectToolCalls(",
+    "var SimplePromptToolExecutor = class {",
+    "var MockPromptExecutor = class extends BasePromptExecutor",
+    "function executeModelStreamOnly(",
+    "executorProfile",
+    'require("node:fs")',
+    "createRequire(",
+]
+# Other bundles a 0.6x Bot computer ships next to the host. Each is probed with
+# the same counts so the report shows which file owns the turn loop.
+EXTRA_BUNDLES = [
+    Path("/home/box/sand-host/sand-eval-runner.cjs"),
+    Path("/exec-daemon/index.js"),
 ]
 # When an exact anchor is missing, show the nearest candidates so the manifest
 # can be updated without a copy of the host.
@@ -65,10 +93,56 @@ def version_hints(source: str) -> list[str]:
     return sorted(found)
 
 
+def node_processes() -> list[dict]:
+    """Node processes and the bundle each one runs; arguments are cut short."""
+    rows = []
+    for line in os.popen("ps -eo pid,ppid,etimes,args 2>/dev/null").read().splitlines()[1:]:
+        parts = line.split(None, 3)
+        if len(parts) < 4:
+            continue
+        pid, ppid, elapsed, args = parts
+        if not re.search(r"(?:^|/)node(?:\s|$)|\.c?js\b", args):
+            continue
+        rows.append({"pid": int(pid), "ppid": int(ppid), "elapsedSeconds": int(elapsed), "args": args[:120]})
+    return rows[:40]
+
+
+def watch_processes(seconds: float) -> dict:
+    """Sample the process table so a turn's helper processes become visible.
+
+    Start the probe with --watch, then send the Bot one ordinary chat message
+    from Grok Bot while it runs. Only processes that appear during the window
+    are reported, with their arguments cut short.
+    """
+    import time
+
+    def snapshot() -> dict[int, str]:
+        table = {}
+        for line in os.popen("ps -eo pid,args 2>/dev/null").read().splitlines()[1:]:
+            parts = line.split(None, 1)
+            if len(parts) == 2 and parts[0].isdigit():
+                table[int(parts[0])] = parts[1][:120]
+        return table
+
+    known = snapshot()
+    seen: dict[int, str] = {}
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        for pid, args in snapshot().items():
+            if pid not in known and pid not in seen and "ps -eo" not in args:
+                seen[pid] = args
+        time.sleep(0.25)
+    return {"seconds": seconds, "started": [{"pid": pid, "args": args} for pid, args in sorted(seen.items())][:60]}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Read-only Grok Bot host probe.")
     parser.add_argument("--anchor", action="append", default=[],
                         help="extra candidate anchor to count exactly (repeatable)")
+    parser.add_argument("--bundle", action="append", default=[],
+                        help="extra bundle file to count the turn-loop anchors in (repeatable)")
+    parser.add_argument("--watch", type=float, default=0.0,
+                        help="seconds to watch for node processes that start while you send the Bot one chat message")
     probe_args = parser.parse_args()
     if not HOST.is_file():
         print(json.dumps({"ok": False, "error": f"host not found at {HOST}"}))
@@ -89,7 +163,10 @@ def main() -> int:
         "versionHints": version_hints(source),
         "anchors": {anchor: source.count(anchor) for anchor in REQUIRED_ANCHORS},
         "mockAnchors": {anchor: source.count(anchor) for anchor in KNOWN_MOCK_ANCHORS},
-        "patchAnchors": {anchor: source.count(anchor) for anchor in PATCH_ANCHORS},
+        "patchAnchors": {
+            anchor: source.count(anchor)
+            for anchor in (*PATCH_ANCHORS, *GROUP_DISPATCH_ANCHORS)
+        },
         "customAnchors": {anchor: source.count(anchor) for anchor in extra},
         "candidates": {},
     }
@@ -129,6 +206,33 @@ def main() -> int:
                     scope_lines.append({"line": index - len(window) + offset + 1, "text": text.strip()[:MAX_CHARS]})
             break
     report["identityScope"] = scope_lines[-12:]
+    report["turnLoopAnchors"] = {anchor: source.count(anchor) for anchor in TURN_LOOP_ANCHORS}
+    report["bundles"] = {}
+    for bundle in [*EXTRA_BUNDLES, *(Path(item) for item in probe_args.bundle)]:
+        if not bundle.is_file() or bundle == HOST:
+            continue
+        bundle_data = bundle.read_bytes()
+        bundle_source = bundle_data.decode("utf-8", errors="replace")
+        bundle_lines = bundle_source.split("\n")
+        factory_context = []
+        for index, line in enumerate(bundle_lines):
+            if "createCursorInferencePromptSession(" in line and "function " not in line:
+                factory_context.append([l.strip()[:MAX_CHARS] for l in bundle_lines[max(0, index - 2):index + 2]])
+                if len(factory_context) >= 3:
+                    break
+        report["bundles"][str(bundle)] = {
+            "bytes": len(bundle_data),
+            "sha256": hashlib.sha256(bundle_data).hexdigest(),
+            "versionHints": version_hints(bundle_source),
+            "anchors": {anchor: bundle_source.count(anchor) for anchor in REQUIRED_ANCHORS},
+            "patchAnchors": {anchor: bundle_source.count(anchor) for anchor in (*PATCH_ANCHORS, *GROUP_DISPATCH_ANCHORS)},
+            "turnLoopAnchors": {anchor: bundle_source.count(anchor) for anchor in TURN_LOOP_ANCHORS},
+            "customAnchors": {anchor: bundle_source.count(anchor) for anchor in extra},
+            "sessionFactoryContext": factory_context,
+        }
+    report["processes"] = node_processes()
+    if probe_args.watch > 0:
+        report["watch"] = watch_processes(probe_args.watch)
     print("GROKROUTER_HOST_PROBE_BEGIN")
     print(json.dumps(report, indent=2))
     print("GROKROUTER_HOST_PROBE_END")

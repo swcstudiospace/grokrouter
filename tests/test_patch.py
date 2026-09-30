@@ -167,6 +167,178 @@ const runner = {run: async (_, options) => runInference({resolveBoxId: () => 'bo
         result = subprocess.run(['node','-e',script],capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)
 
+    def test_grok_bot_062_group_dispatch_and_stock_opengrokbot_name(self):
+        source = STOCK_SOURCE.replace(
+            """  const mainSessionOptions = {
+          modelId: host.subagentModelId,
+          isSubagent: host.isSubagentRunner,
+  };""",
+            """  const mainSessionOptions = {
+          executorProfile: host.executorProfile,
+          isSubagent: host.isSubagentRunner,
+  };""",
+        ).replace(
+            """async function runGroup(runner, roomSession, request3, promptForAttempt) {
+  const memberResult = await runner.run(promptForAttempt, {
+    isGroupMemberTurn: true,
+  });
+  return memberResult;
+}""",
+            """async function runLocalRoomMemberTurn(args) {
+  const { room, member } = args;
+  const promptForAttempt = args.prompt;
+  const runner = null;
+  const memberResult = await this.tm.turnRuntime.runAgentTurn(
+    member,
+    runner,
+    promptForAttempt,
+    {
+      isGroupMemberTurn: true,
+    },
+  );
+  return memberResult;
+}
+const OpenGrokBotUserComputerRequest = "stock";
+""",
+        )
+        self.assertIsNone(router_patch.FOREIGN_MARKER.search(source))
+        self.assertEqual(router_patch.patch_anchor_counts(source), [1, 1, 1])
+        patched = router_patch.patch_text(source)
+        self.assertIn("roomId: room.id", patched)
+        self.assertIn("memberId: member.id", patched)
+        self.assertNotIn("request3.member.id", patched)
+        self.assertIn('grokBotRouterControlText: rawTranscriptText', patched)
+        self.assertIn('read(picked.content)', patched)
+        script = patched + r"""
+const assert = require('node:assert/strict');
+const human = {id:'human-2',kind:'message',role:'user',content:'@Test A /provider'};
+(async () => {
+  const result = await runLocalRoomMemberTurn.call(
+    {tm:{turnRuntime:{runAgentTurn: async (_member, _runner, _prompt, options) => options}}},
+    {room:{id:'room-one'}, member:{id:'bot-a', name:'Test A'}, recentUserMessages:[human], prompt:'formatted'});
+  assert.equal(result.isGroupMemberTurn, true);
+  assert.deepEqual(result.grokBotRouterGroupContext, {roomId:'room-one', memberId:'bot-a', memberName:'Test A', message:human});
+  const session = runInference({resolveBoxId:()=>'box-a', executorProfile:'direct', isSubagentRunner:false});
+  assert.equal(session.botId, 'box-a');
+  assert.equal(session.grokBotRouterControlText, '@Research Bot /provider');
+  assert.equal(session.executorProfile, 'direct');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+"""
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNotNone(router_patch.FOREIGN_MARKER.search(source + "\n// opengrok adapter\n"))
+
+    def test_control_text_reads_message_content_when_text_is_absent(self):
+        source = STOCK_SOURCE.replace(
+            'const rawTranscriptText = "@Research Bot /provider";',
+            "const rawTranscriptText = options2.messageId != null ? options2.recentUserMessages?.find((message) => message.id === options2.messageId)?.text : void 0;",
+        )
+        patched = router_patch.patch_text(source)
+        script = patched + r"""
+const assert = require('node:assert/strict');
+const fromContent = runInference({resolveBoxId:()=>'box-a'}, {
+  messageId: 'm1',
+  recentUserMessages: [{id:'m1', role:'user', content:'/model opus'}],
+});
+assert.equal(fromContent.grokBotRouterControlText, '/model opus');
+const fromText = runInference({resolveBoxId:()=>'box-a'}, {
+  messageId: 'm1',
+  recentUserMessages: [{id:'m1', role:'user', text:'/provider anthropic', content:'ignored'}],
+});
+assert.equal(fromText.grokBotRouterControlText, '/provider anthropic');
+const absent = runInference({resolveBoxId:()=>'box-a'}, {});
+assert.equal(absent.grokBotRouterControlText, undefined);
+"""
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_grok_bot_063_tool_executor_interface_reaches_the_router(self):
+        source = STOCK_SOURCE.replace(
+            """class MockPromptExecutor {
+  constructor(factory, messages) {}
+}""",
+            """class MockPromptExecutor {
+  constructor(factory, messages = []) {
+    this.factory = factory;
+    this.builder = { getMessages: () => messages };
+  }
+  stream(_ctx, invocationId, _tools, _options) {
+    const value = this.factory();
+    return { response: Promise.resolve(value), fullStream: (async function* () {})(), invocationId };
+  }
+}
+var SimplePromptToolExecutor = class {
+  constructor(innerExecutor) {
+    this.innerExecutor = innerExecutor;
+  }
+  getMessages() {
+    return this.innerExecutor.getMessages();
+  }
+  executeModelStreamOnly(ctx, _state, interactionHandler, tools, descriptionProps, firstToolCallHook) {
+    return executeModelStreamOnly(ctx, this.innerExecutor, interactionHandler, tools, descriptionProps, firstToolCallHook);
+  }
+  stream(ctx, invocationId, tools, options2) {
+    return this.innerExecutor.stream(ctx, invocationId, tools, options2);
+  }
+};
+function executeModelStreamOnly(ctx, executor, interactionHandler, tools) {
+  const streamResult = executor.stream(ctx, "invocation-063", tools, {});
+  return { fullStream: streamResult.fullStream, response: streamResult.response };
+}""",
+        )
+        patched = router_patch.patch_text(source)
+        script = patched + r"""
+const assert = require('node:assert/strict');
+loadGrokBotRouterConfig = () => ({ provider: "anthropic", anthropicModel: "claude-opus-5-5" });
+const calls = [];
+runGrokBotRouter = async (config, messages, tools, sessionOptions) => {
+  calls.push({ config, tools, sessionOptions });
+  return { text: "routed", toolCalls: [], usage: {} };
+};
+async function extractMemories(args) { return args.executor; }
+async function summarizeEpisode(args) { return args.executor; }
+(async () => {
+  const session = new Host().createSession(() => {}, { botId: "bot-063" });
+  assert.equal(session.getModelId(), "claude-opus-5-5");
+  const stateHandler = { getBlobStore: () => null };
+  const root = session.getExecutor(stateHandler);
+  assert.ok(root instanceof SimplePromptToolExecutor);
+  assert.ok(root.innerExecutor instanceof GrokBotRouterPromptExecutor);
+  assert.equal(root.innerExecutor.sessionOptions.grokBotRouterTextTask, undefined);
+  assert.equal(root.innerExecutor.sessionOptions.botId, "bot-063");
+  const result = root.executeModelStreamOnly({}, stateHandler, {}, [{ name: "SendToUser" }], {}, () => {});
+  const response = await result.response;
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].sessionOptions.botId, "bot-063");
+  assert.deepEqual(calls[0].tools, [{ name: "SendToUser" }]);
+  assert.equal(response.response, "");
+  assert.equal(response.toolCalls[0].toolName, "SendToUser");
+  assert.equal(response.toolCalls[0].args.content, "routed");
+  assert.equal(session.getExecutor(null).innerExecutor.sessionOptions.grokBotRouterTextTask, undefined);
+  const helper = await runMemoryExtraction(session);
+  assert.ok(helper instanceof SimplePromptToolExecutor);
+  assert.equal(helper.innerExecutor.sessionOptions.grokBotRouterTextTask, "memory-extraction");
+  const episode = await runEpisodeSummary(session);
+  assert.equal(episode.innerExecutor.sessionOptions.grokBotRouterTextTask, "episode-summary");
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+"""
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        legacy = router_patch.patch_text(STOCK_SOURCE) + r"""
+const assert = require('node:assert/strict');
+loadGrokBotRouterConfig = () => ({});
+const executor = new Host().createSession(() => {}, { botId: "bot-044" }).getExecutor({ getBlobStore: () => null });
+assert.ok(executor instanceof GrokBotRouterPromptExecutor);
+assert.equal(executor.sessionOptions.grokBotRouterTextTask, undefined);
+"""
+        result = subprocess.run(["node", "-e", legacy], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        streams_without_adapter = STOCK_SOURCE + "function executeModelStreamOnly(ctx, executor) { return executor.stream(ctx); }\n"
+        with self.assertRaisesRegex(router_patch.PatchError, "Tool-executor adapter anchor count was 0"):
+            router_patch.patch_text(streams_without_adapter)
+        with self.assertRaisesRegex(router_patch.PatchError, "Tool-executor adapter anchor count was 2"):
+            router_patch.patch_text(source + "var SimplePromptToolExecutor = class {};\n")
+
     def test_native_memory_executor_is_scoped_and_returns_text(self):
         patched = router_patch.patch_text(STOCK_SOURCE)
         script = patched + r'''
