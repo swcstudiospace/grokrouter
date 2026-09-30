@@ -86,21 +86,19 @@ export class BotClient {
   }
 
   async isGrokRouter({ timeoutMilliseconds = 4_000 } = {}) {
-    for (const base of this.bases) {
-      let body;
-      try {
-        const response = await this.fetchImpl(`${base}/api/health`, { headers: { authorization: `Bearer ${this.token}` }, signal: AbortSignal.timeout(timeoutMilliseconds) });
-        if (!response.ok) continue;
-        body = await response.json();
-      } catch {
-        continue;
-      }
-      if (body && (body.service === SERVICE_MARKER || body.mode === "delegation")) {
-        this.base = base;
-        this.health = body;
+    const probe = async (base) => {
+      const response = await this.fetchImpl(`${base}/api/health`, { headers: { authorization: `Bearer ${this.token}` }, signal: AbortSignal.timeout(timeoutMilliseconds) });
+      if (!response.ok) return null;
+      const body = await response.json();
+      return body && (body.service === SERVICE_MARKER || body.mode === "delegation") ? { base, body } : null;
+    };
+    const results = await Promise.allSettled(this.bases.map(probe));
+    for (const result of results) {
+      if (result.status === "fulfilled" && result.value) {
+        this.base = result.value.base;
+        this.health = result.value.body;
         return true;
       }
-      return false;
     }
     return false;
   }
@@ -185,7 +183,8 @@ export async function fleetToolCall(name, args, { token, tag, prefix, fetchImpl,
     const rows = await Promise.all(bots.map(async ({ node, client }) => {
       try {
         const { structured } = await client.tool("status", { bot: selection }, { timeoutMilliseconds: 20_000 });
-        return { name: node.name, dns: node.dns, reachable: true, version: structured?.version, provider: structured?.provider, model: structured?.model, reasoning: structured?.reasoning, providers: structured?.providers || [] };
+        const version = structured?.version || client.health?.version || "unknown";
+        return { name: node.name, dns: node.dns, reachable: true, version, provider: structured?.provider, model: structured?.model, reasoning: structured?.reasoning, providers: structured?.providers || [] };
       } catch (error) {
         return { name: node.name, dns: node.dns, reachable: false, error: String(error?.message || error) };
       }
