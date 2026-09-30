@@ -109,6 +109,30 @@ per-Bot state store, so each calling agent can keep its own provider and
 model. Claude Code, Hermes, or any MCP client on the tailnet can therefore
 hand work to a Bot computer and receive the same trailer the chat shows.
 
+## Fleet: one key, every Bot
+
+Bot computers are only reachable from the outside once something runs
+inside them, so the first touch of a new Bot is always one pasted line. The
+delegation installer makes that line the last manual step: with
+`GROKROUTER_TAILSCALE_AUTH_KEY` (a reusable, pre-authorized key or an OAuth
+client secret) and `GROKROUTER_TAILSCALE_TAGS`, it joins the tailnet
+unattended and publishes the chat and MCP endpoint; with
+`GROKROUTER_CHAT_TOKEN` every Bot answers to the same token; and it records
+`installSource` (`owner/repo@ref`) and the non-secret `installArguments` in
+`provider.json`. `grokbot-router upgrade [--ref REF]` re-runs that install,
+and the MCP `upgrade` tool runs it in the background so it can be triggered
+remotely. Tokens and auth keys are never recorded or logged; Tailscale's own
+state persists across upgrades, so a Bot stays on the tailnet.
+
+`scripts/fleet.mjs` runs on any tailnet machine (your VPS or Mac) with the
+`tailscale` binary: it lists the `tag:grokrouter` or `grokrouter-*` nodes
+from `tailscale status --json`, finds each one's reachable base
+(`https://<node>` from Tailscale Serve, then `http://`), and calls its `/mcp`
+with the shared token. `bots`, `status`, `upgrade`, `delegate --bot NAME
+--task …` and `control --bot NAME --text …` are the CLI; `fleet.mjs mcp` is
+the same as a stdio MCP server, so one `claude mcp add` gives an agent every
+desk as `delegate {bot, task}`, with a `selection` key per caller.
+
 ## What it depends on
 
 Delegation mode touches three things in the Bot computer, and nothing else:

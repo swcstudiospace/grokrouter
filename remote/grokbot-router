@@ -163,8 +163,9 @@ usage() {
     "  serve [--daemon|--stop|--url|--status]" \
     "                                 Run the zero-Grok chat UI for this Bot computer (Grok Bot 0.63.0+)" \
     "  chat                           Print the chat UI link (same as serve --url)" \
-    "  tailscale up|serve|status|stop [--hostname NAME] [--auth-key KEY]" \
+    "  tailscale up|serve|status|stop [--hostname NAME] [--auth-key KEY] [--tags tag:x]" \
     "                                 Join your tailnet and publish the chat and MCP endpoint to it" \
+    "  upgrade [--ref REF]            Re-run the recorded one-line install (same source and options)" \
     "  status                         Show provider configuration" \
     "  doctor                         Verify runtime, host patch (adapter mode), and credentials" \
     "  repair [--no-restart]           Reapply the exact-gated host patch (adapter mode)" \
@@ -405,6 +406,45 @@ PY
       GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" exec node "$DELEGATION_RUNNER" --status --bot "$2"
     fi
     GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" exec node "$DELEGATION_RUNNER" --status
+    ;;
+  upgrade)
+    require_config
+    install_source="$(config_value installSource)"
+    if [[ ! "$install_source" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[A-Za-z0-9][A-Za-z0-9_./-]*$ ]]; then
+      printf 'ERROR: no install source is recorded; run the one-line installer once, then upgrade works from here\n' >&2
+      exit 1
+    fi
+    upgrade_repository="${install_source%@*}"
+    upgrade_ref="${install_source#*@}"
+    if [[ "${2:-}" == "--ref" ]]; then
+      if [[ ! "${3:-}" =~ ^[A-Za-z0-9][A-Za-z0-9_./-]*$ ]]; then
+        printf 'ERROR: --ref must be a tag, branch, or commit\n' >&2
+        exit 2
+      fi
+      upgrade_ref="$3"
+    fi
+    upgrade_arguments=()
+    while IFS= read -r upgrade_argument; do
+      [[ -n "$upgrade_argument" ]] && upgrade_arguments+=("$upgrade_argument")
+    done < <(ROUTER_CONFIG_PATH="$CONFIG_PATH" python3 - <<'PY'
+import json, os
+config = json.load(open(os.environ["ROUTER_CONFIG_PATH"]))
+for item in config.get("installArguments", []):
+    if isinstance(item, str) and "\n" not in item:
+        print(item)
+PY
+)
+    upgrade_script="$(mktemp -t grokrouter-upgrade.XXXXXX)"
+    if ! curl -fsSL "https://raw.githubusercontent.com/$upgrade_repository/$upgrade_ref/scripts/install-bot.sh" --output "$upgrade_script"; then
+      rm -f "$upgrade_script"
+      printf 'ERROR: could not download the installer from %s@%s\n' "$upgrade_repository" "$upgrade_ref" >&2
+      exit 1
+    fi
+    printf 'Upgrading GrokRouter from %s@%s with the recorded options\n' "$upgrade_repository" "$upgrade_ref"
+    GROKROUTER_REPOSITORY="$upgrade_repository" GROKROUTER_REF="$upgrade_ref" bash "$upgrade_script" "${upgrade_arguments[@]+"${upgrade_arguments[@]}"}"
+    upgrade_status=$?
+    rm -f "$upgrade_script"
+    exit "$upgrade_status"
     ;;
   tailscale)
     require_config

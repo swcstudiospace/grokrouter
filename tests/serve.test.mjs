@@ -159,7 +159,9 @@ test("the MCP endpoint speaks JSON-RPC over HTTP, lists its tools, delegates wit
     dependencies.onProgress("[Anthropic] read_file README.md");
     return { ok: true, botId: input.botId, provider: "anthropic", model: "claude-opus-5-5", reasoning: "xhigh", text: `Done: ${input.task}`, steps: 3, durationMs: 4200 };
   };
-  const server = createChatServer({ config, token: "secret-token-abcdefgh", runDelegationImpl, page: "<p>page</p>" });
+  const upgrades = [];
+  const upgradeImpl = async (input) => { upgrades.push(input); return { started: true, pid: 4242, log: "/tmp/upgrade.log" }; };
+  const server = createChatServer({ config: { ...config, installSource: "swcstudiospace/grokrouter@main" }, token: "secret-token-abcdefgh", runDelegationImpl, upgradeImpl, page: "<p>page</p>" });
   const base = await listen(server);
   const headers = { "content-type": "application/json", authorization: "Bearer secret-token-abcdefgh", accept: "application/json" };
   const rpc = async (payload, extra = {}) => fetch(`${base}/mcp`, { method: "POST", headers: { ...headers, ...extra }, body: JSON.stringify(payload) });
@@ -172,7 +174,7 @@ test("the MCP endpoint speaks JSON-RPC over HTTP, lists its tools, delegates wit
     assert.deepEqual(init.result.capabilities, { tools: { listChanged: false } });
     assert.equal((await rpc({ jsonrpc: "2.0", method: "notifications/initialized" })).status, 202);
     const tools = await (await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list" })).json();
-    assert.deepEqual(tools.result.tools.map((tool) => tool.name), ["delegate", "control", "status", "list_chats"]);
+    assert.deepEqual(tools.result.tools.map((tool) => tool.name), ["delegate", "control", "status", "list_chats", "upgrade"]);
     assert.deepEqual(tools.result.tools[0].inputSchema.required, ["task"]);
 
     const control = await (await rpc({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "control", arguments: { text: "/provider anthropic", bot: "vps-hermes" } } })).json();
@@ -213,6 +215,15 @@ test("the MCP endpoint speaks JSON-RPC over HTTP, lists its tools, delegates wit
     assert.match(chats.result.content[0].text, /from the ui/);
     const viaChat = await (await rpc({ jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "delegate", arguments: { task: "continue", bot: chats.result.structuredContent.chats[0].id } } })).json();
     assert.equal(viaChat.result.structuredContent.bot, `chat:${chats.result.structuredContent.chats[0].id}`);
+
+    assert.equal(status.result.structuredContent.installSource, "swcstudiospace/grokrouter@main");
+    assert.ok(status.result.structuredContent.version);
+    const upgrade = await (await rpc({ jsonrpc: "2.0", id: 12, method: "tools/call", params: { name: "upgrade", arguments: { ref: "feat/next" } } })).json();
+    assert.match(upgrade.result.content[0].text, /Upgrade started from swcstudiospace\/grokrouter@feat\/next/);
+    assert.deepEqual(upgrades, [{ ref: "feat/next" }]);
+    const badRef = await (await rpc({ jsonrpc: "2.0", id: 13, method: "tools/call", params: { name: "upgrade", arguments: { ref: "../evil" } } })).json();
+    assert.equal(badRef.result.isError, true);
+    assert.equal(upgrades.length, 1);
   } finally {
     server.close();
     await cleanup();

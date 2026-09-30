@@ -21,6 +21,7 @@ node --check "$PROJECT_ROOT/runtime/delegate.mjs"
 node --check "$PROJECT_ROOT/scripts/register-native-commands.mjs"
 node --check "$PROJECT_ROOT/runtime/serve.mjs"
 node --check "$PROJECT_ROOT/runtime/tailnet.mjs"
+node --check "$PROJECT_ROOT/scripts/fleet.mjs"
 node --check "$PROJECT_ROOT/runtime/openrouter-catalog.mjs"
 node --check "$PROJECT_ROOT/runtime/xai-oauth.mjs"
 node --check "$PROJECT_ROOT/runtime/model-catalog.mjs"
@@ -656,7 +657,7 @@ grep -q 'GROKROUTER_DELEG0_INSTALL_FAILED_OPTIONS_UNKNOWN_OPTION' <<<"$UNKNOWN_D
 OLD_VERSION_FAILURE="$(ROUTER_INSTALL_ATTEMPT=DELEG1 bash "$PAYLOAD/remote/install-delegation.sh" --install-root "$DELEGATION_RUNTIME" --grok-version 0.44.0 2>&1 || true)"
 grep -q 'GROKROUTER_DELEG1_INSTALL_FAILED_OPTIONS_UNSUPPORTED_VERSION' <<<"$OLD_VERSION_FAILURE"
 [[ ! -e "$DELEGATION_RUNTIME" ]]
-for rejected_option in "--provider gemini INVALID_PROVIDER" "--providers codex,gemini INVALID_PROVIDERS" "--reasoning extreme INVALID_REASONING" "--workspace relative/path INVALID_WORKSPACE" "--anthropic-model claude|sh INVALID_ANTHROPIC_MODEL"; do
+for rejected_option in "--provider gemini INVALID_PROVIDER" "--providers codex,gemini INVALID_PROVIDERS" "--reasoning extreme INVALID_REASONING" "--workspace relative/path INVALID_WORKSPACE" "--anthropic-model claude|sh INVALID_ANTHROPIC_MODEL" "--chat-token short INVALID_CHAT_TOKEN" "--tailscale-hostname Ship_Desk INVALID_TAILSCALE_HOSTNAME" "--tailscale-tags grokrouter INVALID_TAILSCALE_TAGS" "--tailscale-auth-key nope INVALID_TAILSCALE_AUTH_KEY"; do
   read -r option_name option_value option_code <<<"$rejected_option"
   OPTION_FAILURE="$(ROUTER_INSTALL_ATTEMPT=DELEG2 bash "$PAYLOAD/remote/install-delegation.sh" --install-root "$DELEGATION_RUNTIME" "$option_name" "$option_value" 2>&1 || true)"
   grep -q "GROKROUTER_DELEG2_INSTALL_FAILED_OPTIONS_$option_code" <<<"$OPTION_FAILURE"
@@ -813,12 +814,25 @@ grep -q 'Enabled: False' <<<"$("$DELEGATION_BIN/grokbot-router" status)"
 cmp "$HOST_FIXTURE" "$DELEGATION_HOST"
 
 # The one-line Bot terminal installer hands every option to the delegation
-# installer from a local checkout without downloading anything.
+# installer from a local checkout without downloading anything, records the
+# source and the non-secret options for grokbot-router upgrade, and accepts a
+# shared token so a whole fleet answers to one key.
 BOOTSTRAP_RUNTIME="$TEMPORARY/bootstrap-runtime"
+GROKROUTER_CHAT_TOKEN="fleet-token-0123456789abcdef" \
 ROUTER_BIN_DIR="$TEMPORARY/bootstrap-bin" \
 ROUTER_GROK_SKILLS_ROOT="$TEMPORARY/bootstrap-grok-skills" \
-bash "$PROJECT_ROOT/scripts/install-bot.sh" --install-root "$BOOTSTRAP_RUNTIME" --provider xai --providers xai --no-chat >"$TEMPORARY/install-bot.log" 2>&1
+bash "$PROJECT_ROOT/scripts/install-bot.sh" --install-root "$BOOTSTRAP_RUNTIME" --provider xai --providers xai --no-chat --tailscale-hostname ship-desk --tailscale-tags tag:grokrouter >"$TEMPORARY/install-bot.log" 2>&1
 ! grep -q 'Zero-Grok chat' "$TEMPORARY/install-bot.log"
+[[ "$(cat "$BOOTSTRAP_RUNTIME/chat-token")" == "fleet-token-0123456789abcdef" ]]
+python3 - "$BOOTSTRAP_RUNTIME/provider.json" <<'PY'
+import json, sys
+config = json.load(open(sys.argv[1]))
+assert config["installSource"] == "swcstudiospace/grokrouter@main", config.get("installSource")
+assert config["installArguments"] == ["--provider", "xai", "--providers", "xai", "--no-chat", "--tailscale-hostname", "ship-desk", "--tailscale-tags", "tag:grokrouter"], config.get("installArguments")
+assert "fleet-token" not in json.dumps(config)
+PY
+grep -q 'Upgrading GrokRouter from swcstudiospace/grokrouter@main' <<<"$(cd "$TEMPORARY" && GROKROUTER_CHAT_TOKEN= "$TEMPORARY/bootstrap-bin/grokbot-router" upgrade --ref 'bad ref' 2>&1 || true)" && exit 1 || true
+grep -q -- '--ref must be a tag' <<<"$("$TEMPORARY/bootstrap-bin/grokbot-router" upgrade --ref 'bad ref' 2>&1 || true)"
 grep -q 'GROKBOT_ROUTER_INSTALL_OK' "$TEMPORARY/install-bot.log"
 grep -q 'Source checkout: no payload integrity manifest to verify' "$TEMPORARY/install-bot.log"
 grep -q 'Default provider: xai' <<<"$("$TEMPORARY/bootstrap-bin/grokbot-router" status)"

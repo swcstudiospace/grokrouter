@@ -36,6 +36,12 @@ MANAGE_LEGACY=1
 START_CHAT=1
 CHAT_PORT="${ROUTER_CHAT_PORT:-7878}"
 CHAT_AUTOSTART="${ROUTER_CHAT_AUTOSTART:-/home/box/.config/autostart/grokbot-router-chat.desktop}"
+CHAT_TOKEN="${GROKROUTER_CHAT_TOKEN:-}"
+TAILSCALE_AUTH_KEY="${GROKROUTER_TAILSCALE_AUTH_KEY:-}"
+TAILSCALE_HOSTNAME="${GROKROUTER_TAILSCALE_HOSTNAME:-}"
+TAILSCALE_TAGS="${GROKROUTER_TAILSCALE_TAGS:-}"
+INSTALL_SOURCE="${GROKROUTER_INSTALL_SOURCE:-}"
+RECORDED_ARGUMENTS=()
 GROK_SKILLS_ROOT="${ROUTER_GROK_SKILLS_ROOT:-/home/box/.grok/skills}"
 INSTALL_ATTEMPT="${ROUTER_INSTALL_ATTEMPT:-LOCAL}"
 INSTALL_PHASE="OPTIONS"
@@ -84,10 +90,46 @@ usage() {
     "                               Default reasoning effort for the default provider" \
     "  --workspace DIR              Directory delegated tasks run in (default /workspace)" \
     "  --no-chat                    Do not start the zero-Grok chat UI (grokbot-router serve)" \
+    "  --chat-token TOKEN           Use this token for the chat and MCP endpoint (or GROKROUTER_CHAT_TOKEN)" \
+    "  --tailscale-auth-key KEY     Join your tailnet unattended and publish the chat (or GROKROUTER_TAILSCALE_AUTH_KEY)" \
+    "  --tailscale-hostname NAME    Node name on the tailnet (default grokrouter-<id>)" \
+    "  --tailscale-tags tag:a,tag:b Tags to advertise with the auth key (or GROKROUTER_TAILSCALE_TAGS)" \
     "  --install-root PATH          Development/testing only"
 }
 
 while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --chat-token)
+      CHAT_TOKEN="${2:?missing chat token}"
+      shift 2
+      continue
+      ;;
+    --tailscale-auth-key)
+      TAILSCALE_AUTH_KEY="${2:?missing Tailscale auth key}"
+      shift 2
+      continue
+      ;;
+    --tailscale-hostname)
+      TAILSCALE_HOSTNAME="${2:?missing Tailscale hostname}"
+      RECORDED_ARGUMENTS+=("$1" "$2")
+      shift 2
+      continue
+      ;;
+    --tailscale-tags)
+      TAILSCALE_TAGS="${2:?missing Tailscale tags}"
+      RECORDED_ARGUMENTS+=("$1" "$2")
+      shift 2
+      continue
+      ;;
+  esac
+  case "$1" in
+    --grok-version|--provider|--providers|--codex-model|--openrouter-model|--anthropic-model|--xai-model|--reasoning|--workspace)
+      RECORDED_ARGUMENTS+=("$1" "${2:-}")
+      ;;
+    --no-chat)
+      RECORDED_ARGUMENTS+=("$1")
+      ;;
+  esac
   case "$1" in
     --grok-version)
       GROK_VERSION="${2:?missing Grok Bot version}"
@@ -192,6 +234,22 @@ if [[ -n "$DEFAULT_REASONING" && ! "$DEFAULT_REASONING" =~ ^(minimal|low|medium|
 fi
 if [[ "$WORKSPACE" != /* || "$WORKSPACE" =~ [[:space:]] ]]; then
   fail_install "INVALID_WORKSPACE" "--workspace must be an absolute path without spaces"
+fi
+if [[ -n "$CHAT_TOKEN" && ! "$CHAT_TOKEN" =~ ^[A-Za-z0-9_-]{16,128}$ ]]; then
+  fail_install "INVALID_CHAT_TOKEN" "--chat-token must be 16-128 letters, digits, - or _"
+fi
+if [[ -n "$TAILSCALE_HOSTNAME" && ! "$TAILSCALE_HOSTNAME" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; then
+  fail_install "INVALID_TAILSCALE_HOSTNAME" "--tailscale-hostname must be a DNS label"
+fi
+if [[ -n "$TAILSCALE_TAGS" && ! "$TAILSCALE_TAGS" =~ ^tag:[a-z0-9][a-z0-9-]*(,tag:[a-z0-9][a-z0-9-]*)*$ ]]; then
+  fail_install "INVALID_TAILSCALE_TAGS" "--tailscale-tags must be comma-separated tag:name entries"
+fi
+AUTH_KEY_PATTERN='^[A-Za-z0-9_?=&.-]{20,200}$'
+if [[ -n "$TAILSCALE_AUTH_KEY" && ! "$TAILSCALE_AUTH_KEY" =~ $AUTH_KEY_PATTERN ]]; then
+  fail_install "INVALID_TAILSCALE_AUTH_KEY" "--tailscale-auth-key does not look like a Tailscale auth key or OAuth secret"
+fi
+if [[ -n "$INSTALL_SOURCE" && ! "$INSTALL_SOURCE" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[A-Za-z0-9][A-Za-z0-9_./-]*$ ]]; then
+  INSTALL_SOURCE=""
 fi
 if [[ -n "$GROK_VERSION" ]]; then
   if [[ ! "$GROK_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -314,6 +372,8 @@ ROUTER_REASONING="$DEFAULT_REASONING" \
 ROUTER_WORKSPACE="$WORKSPACE" \
 ROUTER_WORKSPACE_EXPLICIT="$WORKSPACE_EXPLICIT" \
 ROUTER_KNOWN_PROVIDERS="$KNOWN_PROVIDERS" \
+ROUTER_INSTALL_SOURCE="$INSTALL_SOURCE" \
+ROUTER_INSTALL_ARGUMENTS="$(printf '%s\n' "${RECORDED_ARGUMENTS[@]+"${RECORDED_ARGUMENTS[@]}"}")" \
 python3 - <<'PY'
 import json
 import os
@@ -385,6 +445,14 @@ reasoning = os.environ["ROUTER_REASONING"]
 if reasoning:
     reasoning_key = {"codex": "codexReasoning", "openrouter": "openRouterReasoning", "anthropic": "anthropicReasoning", "xai": "xaiReasoning"}[provider]
     config[reasoning_key] = reasoning
+# grokbot-router upgrade re-runs the same source with the same options; secrets
+# (tokens, auth keys) are never recorded here.
+source = os.environ["ROUTER_INSTALL_SOURCE"]
+if source:
+    config["installSource"] = source
+arguments = [item for item in os.environ["ROUTER_INSTALL_ARGUMENTS"].split("\n") if item != ""]
+if arguments:
+    config["installArguments"] = arguments
 path.write_text(json.dumps(config, indent=2) + "\n")
 path.chmod(0o600)
 PY
@@ -570,6 +638,10 @@ printf 'This Bot: %s\n' "$BOT_STATUS"
 # The zero-Grok chat UI: served by this runtime on 127.0.0.1, reachable from
 # the Bot computer's own browser (or a tunnel), and restarted with the desktop.
 CHAT_URL=""
+if [[ -n "$CHAT_TOKEN" ]]; then
+  printf '%s\n' "$CHAT_TOKEN" > "$INSTALL_ROOT/chat-token"
+  chmod 600 "$INSTALL_ROOT/chat-token"
+fi
 if [[ "$START_CHAT" == "1" ]]; then
   if ROUTER_CHAT_PORT="$CHAT_PORT" "$INSTALL_ROOT/bin/grokbot-router" serve --daemon >"$INSTALL_PARENT/.grokbot-router-chat-start.log" 2>&1; then
     CHAT_URL="$(ROUTER_CHAT_PORT="$CHAT_PORT" "$INSTALL_ROOT/bin/grokbot-router" serve --url)"
@@ -589,6 +661,20 @@ EOF
     cat "$INSTALL_PARENT/.grokbot-router-chat-start.log" >&2 || true
   fi
   rm -f "$INSTALL_PARENT/.grokbot-router-chat-start.log"
+fi
+
+TAILNET_LINES=""
+if [[ -n "$TAILSCALE_AUTH_KEY" && "$START_CHAT" == "1" && -n "$CHAT_URL" ]]; then
+  printf 'Joining your tailnet with the provided auth key…\n'
+  tailnet_arguments=(up)
+  [[ -n "$TAILSCALE_HOSTNAME" ]] && tailnet_arguments+=(--hostname "$TAILSCALE_HOSTNAME")
+  [[ -n "$TAILSCALE_TAGS" ]] && tailnet_arguments+=(--tags "$TAILSCALE_TAGS")
+  if TAILNET_LINES="$(GROKROUTER_TAILSCALE_AUTH_KEY="$TAILSCALE_AUTH_KEY" ROUTER_CHAT_PORT="$CHAT_PORT" "$INSTALL_ROOT/bin/grokbot-router" tailscale "${tailnet_arguments[@]}" 2>&1)"; then
+    printf '%s\n' "$TAILNET_LINES" | grep -v -i 'auth-key' || true
+  else
+    printf 'WARNING: the tailnet join did not finish; run grokbot-router tailscale up later:\n%s\n' "$(printf '%s\n' "$TAILNET_LINES" | grep -v -i 'auth-key')" >&2
+    TAILNET_LINES=""
+  fi
 fi
 
 ROUTER_INSTALL_ROOT="$INSTALL_ROOT" python3 - <<'PY'
@@ -628,7 +714,9 @@ if [[ "$ENABLED_PROVIDERS" == *openrouter* ]]; then
 fi
 if [[ -n "$CHAT_URL" ]]; then
   printf 'Zero-Grok chat: open %s in this Bot computer'"'"'s browser (grokbot-router chat prints it again).\n' "$CHAT_URL"
-  printf 'To reach it and the MCP endpoint (%s) from your other devices: grokbot-router tailscale up\n' "${CHAT_URL%%/?token=*}/mcp"
+  if [[ -z "$TAILNET_LINES" ]]; then
+    printf 'To reach it and the MCP endpoint (%s) from your other devices: grokbot-router tailscale up\n' "${CHAT_URL%%/?token=*}/mcp"
+  fi
 fi
 printf 'Then, in the Terminal of the Mac or PC that runs Grok Bot, register the slash commands:\n'
 printf '  curl -fsSL https://raw.githubusercontent.com/swcstudiospace/grokrouter/main/scripts/register-commands.sh | bash\n'

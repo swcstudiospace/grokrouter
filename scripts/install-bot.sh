@@ -65,4 +65,4 @@ fi
   || fail "the source archive is missing remote/install-delegation.sh (GrokRouter $SOURCE_REF predates delegation mode)"
 
 printf 'Installing GrokRouter delegation mode from %s@%s\n' "$REPOSITORY" "$SOURCE_REF"
-bash "$SOURCE_ROOT/remote/install-delegation.sh" "$@"
+GROKROUTER_INSTALL_SOURCE="$REPOSITORY@$SOURCE_REF" bash "$SOURCE_ROOT/remote/install-delegation.sh" "$@"

@@ -93,6 +93,23 @@ claude mcp add --transport http ship-desk https://grokrouter-52281608.<tailnet>.
 
 Each Bot computer gets its own install, chat, node and MCP endpoint; a selection key such as `bot: "hermes"` keeps a separate provider/model choice per calling agent.
 
+#### A whole fleet from one key
+
+To stop adding Bots one at a time, create one reusable, pre-authorized Tailscale auth key (or an OAuth client secret) for the tag `tag:grokrouter`, choose one shared token, and make that the one-liner for every new Bot computer:
+
+```bash
+GROKROUTER_TAILSCALE_AUTH_KEY=tskey-auth-… GROKROUTER_TAILSCALE_TAGS=tag:grokrouter GROKROUTER_CHAT_TOKEN=<your token> \
+curl -fsSL https://raw.githubusercontent.com/swcstudiospace/grokrouter/main/scripts/install-bot.sh | bash -s -- --provider anthropic --anthropic-model claude-opus-5-5 --reasoning xhigh --tailscale-hostname <bot-name>
+```
+
+That single line installs, joins the tailnet without any approval click, publishes the chat and MCP endpoint, and records its source and options. The first touch of a fresh Bot computer is still that one pasted line (nothing outside a Bot computer can run code in it before then), but everything after is central: on your VPS or Mac, `node scripts/fleet.mjs bots|status|upgrade|delegate|control` discovers every `tag:grokrouter` node on the tailnet and talks to it with the shared token, `upgrade` re-runs each Bot's recorded install (`grokbot-router upgrade`, also an MCP tool), and `node scripts/fleet.mjs mcp` serves the whole fleet as one MCP server over stdio for Claude Code, Hermes, or any other agent:
+
+```bash
+claude mcp add grokrouter-fleet -e GROKROUTER_CHAT_TOKEN=<your token> -- node /path/to/grokrouter/scripts/fleet.mjs mcp
+```
+
+Its tools are `bots`, `delegate {bot, task}`, `control {bot, text}`, `status {bot}` and `upgrade {bot?}`. The auth key expires on the schedule you gave it (OAuth client secrets do not); Bots already joined stay joined.
+
 What delegation does and does not save: Grok still runs every chat turn on its own servers (on 0.62.0+ the Bot computer is only a tool sandbox, so no router can change that), and each `/route` costs one Grok turn in which Grok reads the command, runs one shell command, and relays the output. The delegated model does the task itself on its own plan. The saving is everything Grok would otherwise have done inside the task: a thirty-step coding job is one Grok turn instead of thirty, while a one-line question saves nothing. Settings changed from the Bot terminal (`grokbot-router control "/model …"`) cost no Grok usage at all; the chat controls cost one turn each.
 
 To confirm which model did the work: every `/route` report ends with `[GrokRouter <version> · Anthropic · claude-opus-5-5 · xhigh · N steps · Ns]`; `grokbot-router logs` in the Bot terminal shows the `delegation_start` and `delegation_ok` events with the same provider and model; `/router doctor` shows the Bot's active selection. A reply without the trailer came from Grok itself.

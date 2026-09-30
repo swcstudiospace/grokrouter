@@ -157,10 +157,20 @@ export async function stopDaemon({ root } = {}) {
   return { stopped: Boolean(pid) };
 }
 
-export async function bringUp({ root, hostname: name = defaultHostname(), authKey = "", log = () => {} } = {}) {
+export function validTags(tags) {
+  const list = String(tags || "").split(",").map((tag) => tag.trim()).filter(Boolean);
+  for (const tag of list) {
+    if (!/^tag:[a-z0-9][a-z0-9-]{0,62}$/.test(tag)) throw new Error(`--tags must be comma-separated tag:name entries; got ${tag}`);
+  }
+  return list;
+}
+
+export async function bringUp({ root, hostname: name = defaultHostname(), authKey = "", tags = "", log = () => {} } = {}) {
   const paths = tailnetPaths(root);
   if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) throw new Error("--hostname must be a DNS label: lowercase letters, digits and hyphens");
   const args = ["up", `--hostname=${name}`, "--timeout=25s"];
+  const tagList = validTags(tags);
+  if (tagList.length) args.push(`--advertise-tags=${tagList.join(",")}`);
   if (authKey) args.push(`--auth-key=${authKey}`);
   let output = "";
   try {
@@ -210,13 +220,15 @@ function usage() {
   return [
     "GrokRouter tailnet helper: put this Bot computer on your Tailscale network and publish the zero-Grok chat and MCP endpoint to it.",
     "",
-    "  node tailnet.mjs up [--hostname NAME] [--auth-key KEY]   Install Tailscale (user-space), start it, join the tailnet, publish the chat",
+    "  node tailnet.mjs up [--hostname NAME] [--auth-key KEY] [--tags tag:a,tag:b]",
+    "                                                          Install Tailscale (user-space), start it, join the tailnet, publish the chat",
     "  node tailnet.mjs start                                  Start tailscaled again (used by the desktop autostart entry)",
     "  node tailnet.mjs serve                                  (Re)publish the chat server on the tailnet",
     "  node tailnet.mjs status                                 Show the node name, IPs and serve configuration",
     "  node tailnet.mjs stop                                   Stop tailscaled (the node stays registered)",
     "",
-    "Without --auth-key, `up` prints a login link for you to approve once in a browser. The key is never written to a log.",
+    "Without --auth-key (or GROKROUTER_TAILSCALE_AUTH_KEY), `up` prints a login link to approve once in a browser. A reusable,",
+    "pre-authorized key with --tags (or GROKROUTER_TAILSCALE_TAGS) joins unattended; the key is never written to a log.",
   ].join("\n");
 }
 
@@ -227,6 +239,7 @@ export async function main(argv = process.argv.slice(2)) {
     const argument = argv[index];
     if (argument === "--hostname") options.hostname = String(argv[++index] || "");
     else if (argument === "--auth-key") options.authKey = String(argv[++index] || "");
+    else if (argument === "--tags") options.tags = String(argv[++index] || "");
     else if (argument === "--port") options.port = Number(argv[++index]);
     else if (argument === "--force") options.force = true;
     else if (argument === "-h" || argument === "--help") {
@@ -243,7 +256,7 @@ export async function main(argv = process.argv.slice(2)) {
     log(release.reused ? `Tailscale ${release.version} is already installed.` : `Installed Tailscale ${release.version}.`);
     const daemon = await startDaemon({ root, log });
     log(daemon.started ? "tailscaled started (user-space networking, this Bot computer only)." : "tailscaled is already running.");
-    const up = await bringUp({ root, hostname: options.hostname || defaultHostname(), authKey: options.authKey || "", log });
+    const up = await bringUp({ root, hostname: options.hostname || defaultHostname(), authKey: options.authKey || process.env.GROKROUTER_TAILSCALE_AUTH_KEY || "", tags: options.tags || process.env.GROKROUTER_TAILSCALE_TAGS || "", log });
     if (!up.running) {
       log(`Approve this Bot computer on your tailnet, then run grokbot-router tailscale serve:\n\n  ${up.loginUrl}\n`);
       log(`Node name after approval: ${up.hostname}`);

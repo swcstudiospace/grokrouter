@@ -1,4 +1,6 @@
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { openSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
@@ -177,7 +179,24 @@ const MCP_TOOLS = [
     description: "List this Bot computer's GrokRouter chats (id, title, message count); a chat id can be passed as `bot` to continue that conversation's selection and provider session.",
     inputSchema: { type: "object", properties: {} },
   },
+  {
+    name: "upgrade",
+    description: "Re-run this Bot computer's recorded one-line GrokRouter install in the background (same source and options, or a different ref). The chat and MCP server restart during it; poll status afterwards.",
+    inputSchema: { type: "object", properties: { ref: { type: "string", description: "Tag, branch, or commit to install instead of the recorded one." } } },
+  },
 ];
+
+export function defaultUpgradeImpl(config) {
+  return async ({ ref } = {}) => {
+    const root = dirname(config.statePath || join(runtimeDirectory, "conversation-states.json"));
+    const cli = join(root, "bin", "grokbot-router");
+    const log = join(dirname(root), "grokbot-router-upgrade.log");
+    const out = openSync(log, "a");
+    const child = spawn(cli, ["upgrade", ...(ref ? ["--ref", ref] : [])], { detached: true, stdio: ["ignore", out, out], env: { ...process.env, GROKBOT_ROUTER_CONFIG: config.configPath || process.env.GROKBOT_ROUTER_CONFIG || "" } });
+    child.unref();
+    return { started: true, pid: child.pid, log };
+  };
+}
 
 function mcpSelectionKey(bot) {
   const value = String(bot || "mcp").trim();
@@ -193,8 +212,15 @@ function mcpError(text) {
   return { content: [{ type: "text", text }], isError: true };
 }
 
-async function mcpToolCall({ name, args, config, store, runDelegationImpl, runControlImpl, botStatusImpl, onProgress }) {
+async function mcpToolCall({ name, args, config, store, runDelegationImpl, runControlImpl, botStatusImpl, upgradeImpl, onProgress }) {
   const input = args && typeof args === "object" ? args : {};
+  if (name === "upgrade") {
+    const ref = input.ref === undefined ? "" : String(input.ref);
+    if (ref && !/^[A-Za-z0-9][A-Za-z0-9_./-]*$/.test(ref)) return mcpError("ref must be a tag, branch, or commit");
+    if (!config.installSource) return mcpError("No install source is recorded on this Bot computer; run the one-line installer there once.");
+    const result = await upgradeImpl({ ref });
+    return mcpResult(`Upgrade started from ${ref ? `${String(config.installSource).split("@")[0]}@${ref}` : config.installSource}; the chat and MCP server restart during it. Log: ${result.log}`, { ...result, source: config.installSource, ref: ref || String(config.installSource).split("@")[1] });
+  }
   if (name === "delegate") {
     const task = String(input.task || "").trim();
     if (!task) return mcpError("task is required");
@@ -218,7 +244,8 @@ async function mcpToolCall({ name, args, config, store, runDelegationImpl, runCo
   }
   if (name === "status") {
     const status = await botStatusImpl({ config, botId: mcpSelectionKey(input.bot) });
-    return mcpResult(`${providerLabel(status.provider)} is active for ${status.botId}. Model: ${status.model}. Reasoning: ${status.reasoning}.`, { bot: status.botId, provider: status.provider, model: status.model, reasoning: status.reasoning });
+    return mcpResult(`${providerLabel(status.provider)} is active for ${status.botId}. Model: ${status.model}. Reasoning: ${status.reasoning}. GrokRouter ${ROUTER_VERSION}${config.installSource ? ` from ${config.installSource}` : ""}.`,
+      { bot: status.botId, provider: status.provider, model: status.model, reasoning: status.reasoning, version: ROUTER_VERSION, installSource: config.installSource || null, providers: config.providers || [] });
   }
   if (name === "list_chats") {
     const chats = await store.list();
@@ -227,7 +254,7 @@ async function mcpToolCall({ name, args, config, store, runDelegationImpl, runCo
   return null;
 }
 
-async function handleMcp({ request, response, body, config, store, runDelegationImpl, runControlImpl, botStatusImpl }) {
+async function handleMcp({ request, response, body, config, store, runDelegationImpl, runControlImpl, botStatusImpl, upgradeImpl }) {
   const wantsStream = String(request.headers.accept || "").includes("text/event-stream");
   const reply = (payload, status = 200) => {
     if (wantsStream) {
@@ -278,7 +305,7 @@ async function handleMcp({ request, response, body, config, store, runDelegation
           send("message", { jsonrpc: "2.0", method: "notifications/progress", params: { progressToken, progress: progressCount, message: line } });
         }
       };
-      const result = await mcpToolCall({ name, args: params.arguments, config, store, runDelegationImpl, runControlImpl, botStatusImpl, onProgress });
+      const result = await mcpToolCall({ name, args: params.arguments, config, store, runDelegationImpl, runControlImpl, botStatusImpl, upgradeImpl, onProgress });
       const payload = result
         ? { jsonrpc: "2.0", id, result }
         : { jsonrpc: "2.0", id, error: { code: -32602, message: `Unknown tool ${name}` } };
@@ -321,6 +348,7 @@ export function createChatServer({
   runDelegationImpl = runDelegation,
   runControlImpl = runControl,
   botStatusImpl = botStatus,
+  upgradeImpl = defaultUpgradeImpl(config),
   page = null,
 } = {}) {
   if (!token) throw new Error("A chat token is required");
@@ -347,7 +375,7 @@ export function createChatServer({
         return;
       }
       if (request.method === "POST") {
-        await handleMcp({ request, response, body: await readBody(request), config, store, runDelegationImpl, runControlImpl, botStatusImpl });
+        await handleMcp({ request, response, body: await readBody(request), config, store, runDelegationImpl, runControlImpl, botStatusImpl, upgradeImpl });
         return;
       }
       if (request.method === "DELETE") {
@@ -367,7 +395,7 @@ export function createChatServer({
       return;
     }
     if (request.method === "GET" && path === "/api/health") {
-      json(response, 200, { ok: true, version: ROUTER_VERSION, mode: "delegation", enabled: config.enabled !== false, providers: config.providers || [], mcp: "/mcp" });
+      json(response, 200, { ok: true, version: ROUTER_VERSION, mode: "delegation", enabled: config.enabled !== false, providers: config.providers || [], installSource: config.installSource || null, mcp: "/mcp" });
       return;
     }
     if (request.method === "GET" && path === "/api/chats") {
