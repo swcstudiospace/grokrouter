@@ -664,6 +664,9 @@ export function classifyProviderError(error, provider = "") {
   if (/no completion choice/.test(text)) {
     return { code: "bad-response", hint: `${label} returned a response the router could not read. Retry, or switch model.` };
   }
+  if (/does not support this model.*version [\d.]+ or newer is required|update the claude desktop app/.test(text)) {
+    return { code: "sdk-outdated", hint: "The bundled Claude Agent SDK is older than this model needs. Reinstall GrokRouter (it pins a newer SDK), or choose another model with /model <id>." };
+  }
   if (status === 400 || /invalid|unsupported|unrecognized|not supported|bad request/.test(text)) {
     const detail = raw.match(/failed \(\d{3}: (.+)\)$/)?.[1];
     return {
@@ -697,7 +700,7 @@ export async function recentFailures(config, limit = 5) {
     } catch {
       continue;
     }
-    if (event?.event !== "turn_error" && event?.event !== "host_bridge_error") continue;
+    if (!["turn_error", "host_bridge_error", "delegation_error"].includes(event?.event)) continue;
     entries.push({
       timestamp: typeof event.timestamp === "string" ? event.timestamp : "",
       provider: event.provider || "host bridge",

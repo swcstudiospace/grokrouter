@@ -13,6 +13,7 @@ import {
   runControl,
   runDelegation,
 } from "../runtime/delegate.mjs";
+import { recentFailures } from "../runtime/run-provider.mjs";
 
 const json = (payload, status = 200) => new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } });
 
@@ -110,6 +111,10 @@ test("a tool loop that never answers stops at the step limit and records the fai
     const events = await audit();
     assert.equal(events.at(-1).event, "delegation_error");
     assert.match(events.at(-1).error, /Stopped after 2 model steps/);
+    const failures = await recentFailures(config, 3);
+    assert.equal(failures.total, 1);
+    assert.equal(failures.entries[0].provider, "openrouter");
+    assert.match(failures.entries[0].reason, /Stopped after 2 model steps/);
   } finally {
     if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY;
     else process.env.OPENROUTER_API_KEY = previousKey;
