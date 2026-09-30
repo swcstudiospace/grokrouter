@@ -716,6 +716,48 @@ export async function recentFailures(config, limit = 5) {
   };
 }
 
+/** Whether Grok's host still creates inference sessions through the patched seam. */
+export async function seamStatus(config) {
+  const pathname = config?.auditPath || join(runtimeDirectory, "audit.jsonl");
+  let raw = "";
+  try {
+    raw = await readFile(pathname, "utf8");
+  } catch {
+    return { available: false, lastSeamHit: "", lastSummarizationHit: "", lastTurn: "", seamHits: 0 };
+  }
+  const status = { available: true, lastSeamHit: "", lastSummarizationHit: "", lastTurn: "", seamHits: 0 };
+  for (const line of raw.split("\n").slice(-4000)) {
+    if (!line.trim()) continue;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const timestamp = typeof event?.timestamp === "string" ? event.timestamp : "";
+    if (event?.event === "seam_hit") {
+      status.seamHits += 1;
+      if (event.summarization === true) status.lastSummarizationHit = timestamp;
+      else status.lastSeamHit = timestamp;
+    } else if (event?.event === "turn_start") {
+      status.lastTurn = timestamp;
+    }
+  }
+  return status;
+}
+
+export function formatSeamStatus(status) {
+  if (!status.available) return "Host seam: no audit log yet (the patched host has not created a session since installation).";
+  if (!status.seamHits) {
+    return "Host seam: never reached. Grok Bot is not creating inference sessions through the patched host, so no turn can be routed on this version.";
+  }
+  const parts = [`Host seam: reached ${status.seamHits} time${status.seamHits === 1 ? "" : "s"}`];
+  if (status.lastSeamHit) parts.push(`last chat session ${status.lastSeamHit}`);
+  if (status.lastSummarizationHit) parts.push(`last maintenance session ${status.lastSummarizationHit}`);
+  parts.push(status.lastTurn ? `last routed turn ${status.lastTurn}` : "no turn routed yet");
+  return parts.join("; ") + ".";
+}
+
 export function formatFailures(failures) {
   if (!failures.available) return "Recent failures: no audit log yet (no turn has run since installation).";
   if (!failures.total) return "Recent failures: none recorded.";
@@ -3215,6 +3257,10 @@ async function main() {
   }
   if (process.argv.includes("--xai-probe")) {
     await probeXai(await loadRuntimeConfig());
+    return;
+  }
+  if (process.argv.includes("--seam-status")) {
+    process.stdout.write(`${formatSeamStatus(await seamStatus(await loadRuntimeConfig()))}\n`);
     return;
   }
   const errorsFlag = process.argv.indexOf("--recent-errors");

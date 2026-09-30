@@ -20,6 +20,40 @@ flowchart LR
   S --> L[live fresh-Bot gate, then merge]
 ```
 
+## When every anchor counts once and nothing routes
+
+Anchor counts prove the patch can be applied, not that Grok still executes
+the patched code. Grok Bot 0.63.0 is the first build where the two diverge:
+the probe reports every manifest anchor and all three patch seams exactly
+once, the patcher installs and `node --check` passes, the watchdog keeps the
+host repaired, and `/provider` even prints the router's stored state — yet no
+turn is routed. On a live 0.63.0 Bot computer (2026-09-30) the patched
+`createSession(onRequestId, sessionOptions)` was never entered across
+several chat turns and host restarts, while the same host answered every
+turn with stock inference and ran the router's skills as ordinary skills.
+The bundles shipped next to the host (`sand-eval-runner.cjs`,
+`/exec-daemon/index.js`) do not start during a turn, and the desktop app's
+`app.asar` carries no turn loop, so on 0.62.0+ chat inference is no longer
+performed by the Bot computer's host at all. Until a live probe finds where
+those builds create inference sessions, treat 0.62.0+ as unsupported even
+though the opt-in installs cleanly.
+
+Two tools make this visible instead of silent:
+
+- The host hook now writes a redacted `seam_hit` audit event every time the
+  patched `createSession` runs. `grokbot-router doctor` (and
+  `node run-provider.mjs --seam-status`) report the last chat and
+  maintenance session that reached the seam and the last routed turn. A
+  fresh install that never shows a seam hit after a chat turn has no seam on
+  the path, whatever the anchor counts say.
+- `scripts/host-probe.py` reports `turnLoopAnchors` for the host and for
+  each bundle next to it (`--bundle` adds more), lists which node processes
+  run which bundle, and `--watch SECONDS` records every process that starts
+  while you send the Bot one chat message. Run it on a Bot computer whose
+  host is stock, send the Bot a plain message during the watch window, and
+  read the `bundles`, `processes` and `watch` sections before choosing a seam
+  for a new build.
+
 ## Stage 1 — detection (automatic)
 
 `.github/workflows/version-watch.yml` runs daily and polls the official stable

@@ -252,6 +252,31 @@ assert.equal(absent.grokBotRouterControlText, undefined);
         result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_session_hook_records_a_seam_hit_in_the_audit_log(self):
+        patched = router_patch.patch_text(STOCK_SOURCE)
+        with tempfile.TemporaryDirectory() as directory:
+            audit = Path(directory) / "audit.jsonl"
+            script = patched + f"""
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+loadGrokBotRouterConfig = () => ({{ auditPath: {json.dumps(str(audit))} }});
+new Host().createSession(() => {{}}, {{ botId: 'seam-bot', skipLabeling: true }});
+new Host().createSession(() => {{}}, {{ isSummarizationSession: true }});
+const events = fs.readFileSync({json.dumps(str(audit))}, 'utf8').trim().split('\\n').map((line) => JSON.parse(line));
+assert.equal(events.length, 2);
+assert.equal(events[0].event, 'seam_hit');
+assert.equal(events[0].seam, 'createSession');
+assert.equal(events[0].summarization, false);
+assert.deepEqual(events[0].sessionOptionKeys, ['botId', 'skipLabeling']);
+assert.equal(events[1].summarization, true);
+assert.match(events[0].timestamp, /^\\d{{4}}-/);
+loadGrokBotRouterConfig = () => undefined;
+new Host().createSession(() => {{}}, {{ botId: 'disabled' }});
+assert.equal(fs.readFileSync({json.dumps(str(audit))}, 'utf8').trim().split('\\n').length, 2);
+"""
+            result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_grok_bot_063_tool_executor_interface_reaches_the_router(self):
         source = STOCK_SOURCE.replace(
             """class MockPromptExecutor {

@@ -369,6 +369,8 @@ else:
 PY
     printf 'Recent failures\n'
     GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" node "$PROVIDER_RUNNER" --recent-errors 3 2>&1 | sed 's/^/  /'
+    printf 'Host seam\n'
+    GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" node "$PROVIDER_RUNNER" --seam-status 2>&1 | sed 's/^/  /'
     printf 'Native commands\n'
     printf '  Registration is managed per Bot by the GrokRouter desktop installer.\n'
     printf '  Run Repair in GrokRouter to sync Bots or channels created after installation.\n'

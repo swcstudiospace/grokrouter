@@ -46,6 +46,7 @@ Every Grok Bot desktop version is a separate gate. A version is reviewed only fr
 | 0.36.0 | Supported | Exact reviewed host. All seven live gates passed on Mac in upstream beta.47 (September 9, 2026). |
 | 0.44.0 | Reviewed host, live acceptance pending | Exact host hash and byte count from a live probe on 2026-09-07, with a signed registry. Beta.47 added three mandatory patch seams (group member dispatch, memory-extraction executor, episode-summary executor) that no 0.44.0 probe has proven yet, and no fresh-Bot acceptance has run. |
 | 0.58.0, 0.59.1, 0.61.0 | Not reviewed; [experimental opt-in](#unreviewed-grok-bot-versions) only | Shipped on the stable feed (0.61.0 is current for Mac arm64 and Windows x64/arm64). No host probe has been reviewed and no live run has been recorded. |
+| 0.62.0, 0.63.0 | Not routable | A live 0.63.0 probe (2026-09-30) shows every anchor and patch seam present once and the patched host verifying and running, yet chat turns never enter the host's `createSession` seam: no `seam_hit`, no audit event, no bridge error, while the stock model answers every turn and runs the router's skills. The Bot computer's host no longer performs chat inference on these builds, so the opt-in installs cleanly but routes nothing. `grokbot-router doctor` now prints the host-seam status so this is visible instead of silent. |
 | Any other version | Refused | Older and in-between versions are always refused, even with the opt-in. |
 
 | Component | Current boundary |

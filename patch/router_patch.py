@@ -155,6 +155,19 @@ function appendGrokBotRouterHostError(config, error) {
     })}\n`, { encoding: "utf8", mode: 0o600 });
   } catch {}
 }
+function appendGrokBotRouterSeamHit(config, sessionOptions) {
+  try {
+    const auditPath = config?.auditPath || "/home/box/sand-data/grokbot-router/audit.jsonl";
+    require("node:fs").appendFileSync(auditPath, `${JSON.stringify({
+      timestamp: new Date().toISOString(),
+      version: "0.1.0-beta.48",
+      event: "seam_hit",
+      seam: "createSession",
+      summarization: sessionOptions?.isSummarizationSession === true,
+      sessionOptionKeys: Object.keys(sessionOptions || {}).slice(0, 40)
+    })}\n`, { encoding: "utf8", mode: 0o600 });
+  } catch {}
+}
 function runGrokBotRouter(config, messages, tools, sessionOptions) {
   return new Promise((resolve, reject) => {
     const runnerPath = config.runnerPath || "/home/box/sand-data/grokbot-router/run-provider.mjs";
@@ -308,6 +321,7 @@ function createGrokBotRouterPromptExecutor(config, sessionOptions) {
 SESSION_CODE = r'''
       // GROKBOT_MODEL_ROUTER_V45: route enabled sessions through the provider adapter.
       const grokBotRouterConfig = loadGrokBotRouterConfig();
+      if (grokBotRouterConfig) appendGrokBotRouterSeamHit(grokBotRouterConfig, sessionOptions);
       // Native maintenance sessions have their own structured-text contract.
       // Keep the host's original inference path for those sessions.
       if (grokBotRouterConfig && sessionOptions?.isSummarizationSession !== true) {

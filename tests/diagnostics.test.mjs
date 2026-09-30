@@ -7,12 +7,14 @@ import test from "node:test";
 import {
   classifyProviderError,
   formatFailures,
+  formatSeamStatus,
   probeXai,
   recentFailures,
   rejectsRequestShape,
   runOpenRouter,
   runTurn,
   runXai,
+  seamStatus,
   unsupportedRequestFields,
 } from "../runtime/run-provider.mjs";
 
@@ -94,6 +96,44 @@ test("a failed turn records its code and hint, and doctor reports the history", 
   } finally {
     if (previous === undefined) delete process.env.OPENROUTER_API_KEY;
     else process.env.OPENROUTER_API_KEY = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("seam status says whether the patched host still creates sessions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "grokrouter-seam-"));
+  try {
+    const auditPath = join(root, "audit.jsonl");
+    const missing = await seamStatus({ auditPath: join(root, "missing.jsonl") });
+    assert.equal(missing.available, false);
+    assert.match(formatSeamStatus(missing), /no audit log yet/);
+
+    await writeFile(auditPath, [
+      JSON.stringify({ timestamp: "2026-09-09T01:05:50.555Z", event: "turn_start", provider: "codex", model: "gpt-5.6-sol" }),
+      JSON.stringify({ timestamp: "2026-09-09T01:05:51.111Z", event: "turn_ok", provider: "codex", model: "gpt-5.6-sol" }),
+      "not json",
+    ].join("\n") + "\n");
+    const silent = await seamStatus({ auditPath });
+    assert.equal(silent.available, true);
+    assert.equal(silent.seamHits, 0);
+    assert.equal(silent.lastTurn, "2026-09-09T01:05:50.555Z");
+    assert.match(formatSeamStatus(silent), /never reached/);
+
+    await writeFile(auditPath, [
+      JSON.stringify({ timestamp: "2026-09-30T00:00:01.000Z", event: "seam_hit", seam: "createSession", summarization: false, sessionOptionKeys: ["botId"] }),
+      JSON.stringify({ timestamp: "2026-09-30T00:00:02.000Z", event: "turn_start", provider: "anthropic", model: "claude-opus-5-5" }),
+      JSON.stringify({ timestamp: "2026-09-30T00:00:09.000Z", event: "seam_hit", seam: "createSession", summarization: true, sessionOptionKeys: ["isSummarizationSession"] }),
+    ].join("\n") + "\n", { flag: "a" });
+    const live = await seamStatus({ auditPath });
+    assert.equal(live.seamHits, 2);
+    assert.equal(live.lastSeamHit, "2026-09-30T00:00:01.000Z");
+    assert.equal(live.lastSummarizationHit, "2026-09-30T00:00:09.000Z");
+    assert.equal(live.lastTurn, "2026-09-30T00:00:02.000Z");
+    const text = formatSeamStatus(live);
+    assert.match(text, /reached 2 times/);
+    assert.match(text, /last chat session 2026-09-30T00:00:01.000Z/);
+    assert.match(text, /last routed turn 2026-09-30T00:00:02.000Z/);
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });

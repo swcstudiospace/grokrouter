@@ -104,6 +104,10 @@ def node_processes() -> list[dict]:
         if not re.search(r"(?:^|/)node(?:\s|$)|\.c?js\b", args):
             continue
         rows.append({"pid": int(pid), "ppid": int(ppid), "elapsedSeconds": int(elapsed), "args": args[:120]})
+    def bundle_first(row: dict) -> tuple[int, int]:
+        owns_bundle = re.search(r"host-main\.cjs|sand-eval-runner|index\.js serve|\.cjs\b", row["args"]) is not None
+        return (0 if owns_bundle else 1, row["pid"])
+    rows.sort(key=bundle_first)
     return rows[:40]
 
 
