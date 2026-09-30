@@ -253,6 +253,7 @@ for required in \
   "$PAYLOAD_ROOT/runtime/delegate.mjs" \
   "$PAYLOAD_ROOT/runtime/serve.mjs" \
   "$PAYLOAD_ROOT/runtime/chat.html" \
+  "$PAYLOAD_ROOT/runtime/tailnet.mjs" \
   "$PAYLOAD_ROOT/runtime/openrouter-catalog.mjs" \
   "$PAYLOAD_ROOT/runtime/xai-oauth.mjs" \
   "$PAYLOAD_ROOT/runtime/model-catalog.mjs" \
@@ -276,6 +277,7 @@ cp "$PAYLOAD_ROOT/runtime/run-provider.mjs" "$STAGE_ROOT/run-provider.mjs"
 cp "$PAYLOAD_ROOT/runtime/delegate.mjs" "$STAGE_ROOT/delegate.mjs"
 cp "$PAYLOAD_ROOT/runtime/serve.mjs" "$STAGE_ROOT/serve.mjs"
 cp "$PAYLOAD_ROOT/runtime/chat.html" "$STAGE_ROOT/chat.html"
+cp "$PAYLOAD_ROOT/runtime/tailnet.mjs" "$STAGE_ROOT/tailnet.mjs"
 cp "$PAYLOAD_ROOT/runtime/openrouter-catalog.mjs" "$STAGE_ROOT/openrouter-catalog.mjs"
 cp "$PAYLOAD_ROOT/runtime/xai-oauth.mjs" "$STAGE_ROOT/xai-oauth.mjs"
 cp "$PAYLOAD_ROOT/runtime/model-catalog.mjs" "$STAGE_ROOT/model-catalog.mjs"
@@ -477,11 +479,11 @@ for name in ("conversation-states.json", "audit.jsonl", "audit.jsonl.1", "chat-t
     existing = source / name
     if existing.is_file():
         shutil.copy2(existing, destination / name)
-for name in ("conversation-states", "chats"):
+for name in ("conversation-states", "chats", "tailscale"):
     existing = source / name
     if existing.is_dir():
         shutil.copytree(existing, destination / name,
-                        ignore=shutil.ignore_patterns("*.lock", "*.tmp"))
+                        ignore=shutil.ignore_patterns("*.lock", "*.tmp", "*.sock"))
 PYSTATE
 
 emit_phase "ACTIVATE_RUNTIME"
@@ -554,7 +556,7 @@ fi
 
 emit_phase "VERIFY_INSTALL"
 printf '[6/7] Final verification\n'
-if ! node --check "$INSTALL_ROOT/run-provider.mjs" || ! node --check "$INSTALL_ROOT/delegate.mjs" || ! node --check "$INSTALL_ROOT/serve.mjs"; then
+if ! node --check "$INSTALL_ROOT/run-provider.mjs" || ! node --check "$INSTALL_ROOT/delegate.mjs" || ! node --check "$INSTALL_ROOT/serve.mjs" || ! node --check "$INSTALL_ROOT/tailnet.mjs"; then
   rollback_runtime
   fail_install "RUNTIME_SYNTAX" "the installed runtime does not parse; the previous runtime was restored"
 fi
@@ -626,6 +628,7 @@ if [[ "$ENABLED_PROVIDERS" == *openrouter* ]]; then
 fi
 if [[ -n "$CHAT_URL" ]]; then
   printf 'Zero-Grok chat: open %s in this Bot computer'"'"'s browser (grokbot-router chat prints it again).\n' "$CHAT_URL"
+  printf 'To reach it and the MCP endpoint (%s) from your other devices: grokbot-router tailscale up\n' "${CHAT_URL%%/?token=*}/mcp"
 fi
 printf 'Then, in the Terminal of the Mac or PC that runs Grok Bot, register the slash commands:\n'
 printf '  curl -fsSL https://raw.githubusercontent.com/swcstudiospace/grokrouter/main/scripts/register-commands.sh | bash\n'

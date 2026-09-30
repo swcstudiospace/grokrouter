@@ -28,6 +28,7 @@ cp "$PROJECT_ROOT/runtime/run-provider.mjs" "$PAYLOAD_ROOT/runtime/run-provider.
 cp "$PROJECT_ROOT/runtime/delegate.mjs" "$PAYLOAD_ROOT/runtime/delegate.mjs"
 cp "$PROJECT_ROOT/runtime/serve.mjs" "$PAYLOAD_ROOT/runtime/serve.mjs"
 cp "$PROJECT_ROOT/runtime/chat.html" "$PAYLOAD_ROOT/runtime/chat.html"
+cp "$PROJECT_ROOT/runtime/tailnet.mjs" "$PAYLOAD_ROOT/runtime/tailnet.mjs"
 cp "$PROJECT_ROOT/runtime/openrouter-catalog.mjs" "$PAYLOAD_ROOT/runtime/openrouter-catalog.mjs"
 cp "$PROJECT_ROOT/runtime/xai-oauth.mjs" "$PAYLOAD_ROOT/runtime/xai-oauth.mjs"
 cp "$PROJECT_ROOT/runtime/model-catalog.mjs" "$PAYLOAD_ROOT/runtime/model-catalog.mjs"

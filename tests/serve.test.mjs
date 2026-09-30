@@ -149,3 +149,72 @@ test("a failed delegation is recorded in the transcript as an error and the chat
     await cleanup();
   }
 });
+
+test("the MCP endpoint speaks JSON-RPC over HTTP, lists its tools, delegates with progress, and shares the chat token", async () => {
+  const { config, cleanup } = await fixture();
+  const seen = [];
+  const runDelegationImpl = async (input, dependencies) => {
+    seen.push(input);
+    dependencies.onProgress("[Anthropic] shell ls");
+    dependencies.onProgress("[Anthropic] read_file README.md");
+    return { ok: true, botId: input.botId, provider: "anthropic", model: "claude-opus-5-5", reasoning: "xhigh", text: `Done: ${input.task}`, steps: 3, durationMs: 4200 };
+  };
+  const server = createChatServer({ config, token: "secret-token-abcdefgh", runDelegationImpl, page: "<p>page</p>" });
+  const base = await listen(server);
+  const headers = { "content-type": "application/json", authorization: "Bearer secret-token-abcdefgh", accept: "application/json" };
+  const rpc = async (payload, extra = {}) => fetch(`${base}/mcp`, { method: "POST", headers: { ...headers, ...extra }, body: JSON.stringify(payload) });
+  try {
+    assert.equal((await fetch(`${base}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 401);
+    assert.equal((await fetch(`${base}/mcp`, { headers })).status, 405);
+    const init = await (await rpc({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "0" } } })).json();
+    assert.equal(init.result.protocolVersion, "2025-06-18");
+    assert.equal(init.result.serverInfo.name, "grokrouter");
+    assert.deepEqual(init.result.capabilities, { tools: { listChanged: false } });
+    assert.equal((await rpc({ jsonrpc: "2.0", method: "notifications/initialized" })).status, 202);
+    const tools = await (await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list" })).json();
+    assert.deepEqual(tools.result.tools.map((tool) => tool.name), ["delegate", "control", "status", "list_chats"]);
+    assert.deepEqual(tools.result.tools[0].inputSchema.required, ["task"]);
+
+    const control = await (await rpc({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "control", arguments: { text: "/provider anthropic", bot: "vps-hermes" } } })).json();
+    assert.equal(control.result.isError, undefined);
+    assert.match(control.result.content[0].text, /to Anthropic \(claude-opus-5-5\)/);
+    const status = await (await rpc({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "status", arguments: { bot: "vps-hermes" } } })).json();
+    assert.equal(status.result.structuredContent.bot, "mcp:vps-hermes");
+    assert.equal(status.result.structuredContent.provider, "anthropic");
+
+    const plain = await (await rpc({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "delegate", arguments: { task: "list the repo", bot: "vps-hermes" } } })).json();
+    assert.equal(plain.result.isError, undefined);
+    assert.match(plain.result.content[0].text, /^Done: list the repo\n\n\[GrokRouter .* · Anthropic · claude-opus-5-5 · xhigh · 3 steps · 4s\]$/);
+    assert.equal(plain.result.structuredContent.bot, "mcp:vps-hermes");
+    assert.equal(seen[0].botId, "mcp:vps-hermes");
+    assert.equal(seen[0].mode, undefined);
+
+    const streamed = await rpc({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "delegate", arguments: { task: "again" }, _meta: { progressToken: "p1" } } }, { accept: "application/json, text/event-stream" });
+    assert.match(streamed.headers.get("content-type"), /text\/event-stream/);
+    const events = parseEvents(await streamed.text()).map((entry) => entry.data);
+    assert.equal(events.length, 3);
+    assert.deepEqual(events[0], { jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: "p1", progress: 1, message: "[Anthropic] shell ls" } });
+    assert.equal(events[2].id, 6);
+    assert.match(events[2].result.content[0].text, /^Done: again/);
+    assert.equal(seen[1].botId, "mcp:mcp");
+
+    const unknown = await (await rpc({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "nope", arguments: {} } })).json();
+    assert.equal(unknown.error.code, -32602);
+    const missing = await (await rpc({ jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "delegate", arguments: {} } })).json();
+    assert.equal(missing.result.isError, true);
+    const method = await (await rpc({ jsonrpc: "2.0", id: 9, method: "resources/list" })).json();
+    assert.equal(method.error.code, -32601);
+    const bad = await rpc({ nope: true });
+    assert.equal(bad.status, 400);
+
+    await (await fetch(`${base}/api/chats`, { method: "POST", headers, body: JSON.stringify({ title: "from the ui" }) })).json();
+    const chats = await (await rpc({ jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "list_chats", arguments: {} } })).json();
+    assert.equal(chats.result.structuredContent.chats.length, 1);
+    assert.match(chats.result.content[0].text, /from the ui/);
+    const viaChat = await (await rpc({ jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "delegate", arguments: { task: "continue", bot: chats.result.structuredContent.chats[0].id } } })).json();
+    assert.equal(viaChat.result.structuredContent.bot, `chat:${chats.result.structuredContent.chats[0].id}`);
+  } finally {
+    server.close();
+    await cleanup();
+  }
+});

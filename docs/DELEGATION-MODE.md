@@ -85,10 +85,29 @@ manages it, and uninstall stops it. Nothing in it touches Grok's host, app, or
 servers: it is a client of the Bot computer only.
 
 The server is reachable inside the Bot computer (its own Chrome, via the
-Computer view). Reaching it from another machine is a tunnel the user
-controls (`ssh -R` from the Bot computer to a server they own, or a Cloudflare
-tunnel); the token still gates every request, and the server never binds to
-a public interface by itself.
+Computer view) and, through `runtime/tailnet.mjs` (`grokbot-router tailscale`),
+on the user's Tailscale network: the helper downloads Tailscale's static
+build into `<install root>/tailscale/`, runs `tailscaled` with
+`--tun=userspace-networking` and a private state directory and socket (no
+root), joins the tailnet as `grokrouter-<id>` (`up` prints the login link or
+takes `--auth-key`), and publishes the chat port with `tailscale serve`
+(HTTPS on the node's `ts.net` name, falling back to HTTP on the tailnet when
+certificates are not enabled). Serve never leaves the tailnet; the token
+still gates every request; the daemon returns with the Bot desktop through
+an autostart entry, and uninstall stops it. The server never binds to a
+public interface by itself.
+
+`POST /mcp` on the same server is a Model Context Protocol endpoint
+(Streamable HTTP, JSON-RPC 2.0, stateless, `Authorization: Bearer <token>`).
+It answers `initialize`, `ping`, `tools/list` and `tools/call`, streams
+`notifications/progress` when the client sends a `progressToken` and accepts
+`text/event-stream`, and offers four tools: `delegate` (task, optional
+`bot` selection key, provider, model, reasoning, fresh), `control`, `status`
+and `list_chats`. A selection key is a chat id (the chat's own selection and
+provider session) or any short identifier, stored as `mcp:<key>` in the same
+per-Bot state store, so each calling agent can keep its own provider and
+model. Claude Code, Hermes, or any MCP client on the tailnet can therefore
+hand work to a Bot computer and receive the same trailer the chat shows.
 
 ## What it depends on
 

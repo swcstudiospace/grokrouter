@@ -37,6 +37,8 @@ if [[ "$ROUTER_MODE" != "delegation" ]]; then
 fi
 DELEGATION_RUNNER="$INSTALL_ROOT/delegate.mjs"
 CHAT_SERVER="$INSTALL_ROOT/serve.mjs"
+TAILNET_HELPER="$INSTALL_ROOT/tailnet.mjs"
+tailnet_autostart="${ROUTER_TAILNET_AUTOSTART:-/home/box/.config/autostart/grokbot-router-tailnet.desktop}"
 ROUTER_CHAT_PORT="${ROUTER_CHAT_PORT:-7878}"
 ROUTER_CHAT_HOST="${ROUTER_CHAT_HOST:-127.0.0.1}"
 chat_pid_file="$(dirname "$INSTALL_ROOT")/grokbot-router-chat.pid"
@@ -161,6 +163,8 @@ usage() {
     "  serve [--daemon|--stop|--url|--status]" \
     "                                 Run the zero-Grok chat UI for this Bot computer (Grok Bot 0.63.0+)" \
     "  chat                           Print the chat UI link (same as serve --url)" \
+    "  tailscale up|serve|status|stop [--hostname NAME] [--auth-key KEY]" \
+    "                                 Join your tailnet and publish the chat and MCP endpoint to it" \
     "  status                         Show provider configuration" \
     "  doctor                         Verify runtime, host patch (adapter mode), and credentials" \
     "  repair [--no-restart]           Reapply the exact-gated host patch (adapter mode)" \
@@ -401,6 +405,29 @@ PY
       GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" exec node "$DELEGATION_RUNNER" --status --bot "$2"
     fi
     GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" exec node "$DELEGATION_RUNNER" --status
+    ;;
+  tailscale)
+    require_config
+    if [[ ! -f "$TAILNET_HELPER" ]]; then
+      printf 'ERROR: the tailnet helper is not installed; run the delegation installer again\n' >&2
+      exit 1
+    fi
+    shift
+    tailnet_command="${1:-status}"
+    if [[ "$tailnet_command" == "up" || "$tailnet_command" == "serve" ]]; then
+      mkdir -p "$(dirname "$tailnet_autostart")" 2>/dev/null || true
+      if [[ -d "$(dirname "$tailnet_autostart")" ]]; then
+        cat > "$tailnet_autostart" <<EOF
+[Desktop Entry]
+Type=Application
+Name=GrokRouter Tailnet
+Exec=$INSTALL_ROOT/bin/grokbot-router tailscale start
+X-GNOME-Autostart-enabled=true
+NoDisplay=true
+EOF
+      fi
+    fi
+    exec env GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" ROUTER_CHAT_PORT="$ROUTER_CHAT_PORT" node "$TAILNET_HELPER" "$@"
     ;;
   serve|chat)
     require_config
@@ -671,6 +698,10 @@ PY
       update_config enabled false
       stop_chat_server
       rm -f "$chat_autostart"
+      if [[ -f "$TAILNET_HELPER" ]]; then
+        GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" node "$TAILNET_HELPER" stop >/dev/null 2>&1 || true
+      fi
+      rm -f "$tailnet_autostart"
       for skill_name in provider models model reasoning router doctor route; do
         skill_source="$INSTALL_ROOT/skills/$skill_name"
         skill_link="$GROK_SKILLS_ROOT/$skill_name"

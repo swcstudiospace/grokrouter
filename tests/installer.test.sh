@@ -19,6 +19,8 @@ python3 -m py_compile "$PROJECT_ROOT/patch/router_patch.py"
 node --check "$PROJECT_ROOT/runtime/run-provider.mjs"
 node --check "$PROJECT_ROOT/runtime/delegate.mjs"
 node --check "$PROJECT_ROOT/scripts/register-native-commands.mjs"
+node --check "$PROJECT_ROOT/runtime/serve.mjs"
+node --check "$PROJECT_ROOT/runtime/tailnet.mjs"
 node --check "$PROJECT_ROOT/runtime/openrouter-catalog.mjs"
 node --check "$PROJECT_ROOT/runtime/xai-oauth.mjs"
 node --check "$PROJECT_ROOT/runtime/model-catalog.mjs"
@@ -284,6 +286,7 @@ done
 [[ -f "$PAYLOAD/runtime/delegate.mjs" ]]
 [[ -f "$PAYLOAD/runtime/serve.mjs" ]]
 [[ -f "$PAYLOAD/runtime/chat.html" ]]
+[[ -f "$PAYLOAD/runtime/tailnet.mjs" ]]
 grep -Fq "ROUTER_VERSION=\"$PAYLOAD_VERSION\"" "$PAYLOAD/remote/install-delegation.sh"
 DELEGATION_MINIMUM="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["delegation"]["minimumVersion"])' "$PROJECT_ROOT/compatibility/supported-apps.json")"
 grep -Fq "MINIMUM_GROK_VERSION=\"$DELEGATION_MINIMUM\"" "$PAYLOAD/remote/install-delegation.sh"
@@ -695,6 +698,12 @@ grep -q 'Chat server running' <<<"$("$DELEGATION_BIN/grokbot-router" serve --sta
 [[ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$CHAT_PORT/api/health")" == "401" ]]
 grep -q '"mode":"delegation"' <<<"$(curl -s -H "Authorization: Bearer $CHAT_TOKEN" "http://127.0.0.1:$CHAT_PORT/api/health")"
 grep -q 'GrokRouter Chat' <<<"$(curl -s "http://127.0.0.1:$CHAT_PORT/")"
+grep -q '"name":"grokrouter"' <<<"$(curl -s -X POST -H "Authorization: Bearer $CHAT_TOKEN" -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' "http://127.0.0.1:$CHAT_PORT/mcp")"
+grep -q '"delegate"' <<<"$(curl -s -X POST -H "Authorization: Bearer $CHAT_TOKEN" -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' "http://127.0.0.1:$CHAT_PORT/mcp")"
+[[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"initialize"}' "http://127.0.0.1:$CHAT_PORT/mcp")" == "401" ]]
+grep -q 'Tailscale: not installed' <<<"$(ROUTER_TAILNET_AUTOSTART="$TEMPORARY/tailnet.desktop" "$DELEGATION_BIN/grokbot-router" tailscale status)"
+[[ ! -e "$TEMPORARY/tailnet.desktop" ]]
+grep -q 'tailscale up' "$TEMPORARY/install-delegation.log"
 CHAT_CREATED="$(curl -s -X POST -H "Authorization: Bearer $CHAT_TOKEN" -H 'content-type: application/json' -d '{}' "http://127.0.0.1:$CHAT_PORT/api/chats")"
 grep -q '"provider":"openrouter"' <<<"$CHAT_CREATED"
 CHAT_ID="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["chat"]["id"])' "$CHAT_CREATED")"

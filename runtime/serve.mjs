@@ -144,6 +144,164 @@ function authorized(request, url, token) {
   return url.searchParams.get("token") === token;
 }
 
+const MCP_PROTOCOL_VERSION = "2025-06-18";
+const MCP_TOOLS = [
+  {
+    name: "delegate",
+    description: "Run a task with this Bot computer's delegated provider (Codex, OpenRouter, Anthropic, or xAI) inside its workspace and return the report with the GrokRouter trailer. No Grok turn is spent.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task: { type: "string", description: "What to do, in full; the provider works in the Bot computer's workspace with shell and file tools." },
+        bot: { type: "string", description: "Selection to use: a chat id from list_chats, or any key such as 'mcp' (default) whose provider/model/reasoning you set with control." },
+        provider: { type: "string", enum: ["codex", "openrouter", "anthropic", "xai"], description: "Override the selection's provider for this task." },
+        model: { type: "string", description: "Override the model for this task." },
+        reasoning: { type: "string", enum: ["minimal", "low", "medium", "high", "xhigh"] },
+        fresh: { type: "boolean", description: "Start a new provider session instead of resuming the selection's." },
+      },
+      required: ["task"],
+    },
+  },
+  {
+    name: "control",
+    description: "Apply a GrokRouter chat control to a selection: /provider <id>, /model <id>, /reasoning <level>, /models, /router help|reset|doctor, /doctor.",
+    inputSchema: { type: "object", properties: { text: { type: "string" }, bot: { type: "string", description: "Selection key; default 'mcp'." } }, required: ["text"] },
+  },
+  {
+    name: "status",
+    description: "Show a selection's active provider, model and reasoning.",
+    inputSchema: { type: "object", properties: { bot: { type: "string", description: "Selection key; default 'mcp'." } } },
+  },
+  {
+    name: "list_chats",
+    description: "List this Bot computer's GrokRouter chats (id, title, message count); a chat id can be passed as `bot` to continue that conversation's selection and provider session.",
+    inputSchema: { type: "object", properties: {} },
+  },
+];
+
+function mcpSelectionKey(bot) {
+  const value = String(bot || "mcp").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9:_.-]{0,63}$/.test(value)) throw Object.assign(new Error("bot must be a short identifier"), { code: -32602 });
+  return CHAT_ID_PATTERN.test(value) ? `chat:${value}` : value.includes(":") ? value : `mcp:${value}`;
+}
+
+function mcpResult(text, structured) {
+  return { content: [{ type: "text", text }], ...(structured ? { structuredContent: structured } : {}) };
+}
+
+function mcpError(text) {
+  return { content: [{ type: "text", text }], isError: true };
+}
+
+async function mcpToolCall({ name, args, config, store, runDelegationImpl, runControlImpl, botStatusImpl, onProgress }) {
+  const input = args && typeof args === "object" ? args : {};
+  if (name === "delegate") {
+    const task = String(input.task || "").trim();
+    if (!task) return mcpError("task is required");
+    const botId = mcpSelectionKey(input.bot);
+    try {
+      const result = await runDelegationImpl(
+        { config, botId, task, provider: input.provider, model: input.model, reasoning: input.reasoning, fresh: Boolean(input.fresh) },
+        { onProgress },
+      );
+      const trailer = formatDelegationTrailer(result);
+      return mcpResult(`${result.text}\n\n${trailer}`, { provider: result.provider, model: result.model, reasoning: result.reasoning, steps: result.steps, durationMs: result.durationMs, trailer, bot: botId });
+    } catch (error) {
+      return mcpError(redactDiagnostic(error?.message || error, 1_000));
+    }
+  }
+  if (name === "control") {
+    const text = String(input.text || "").trim();
+    if (!text.startsWith("/")) return mcpError("text must be a GrokRouter control starting with /");
+    const result = await runControlImpl({ config, botId: mcpSelectionKey(input.bot), text }, { catalogFetch: fetch });
+    return result.ok ? mcpResult(result.text, { provider: result.provider, model: result.model }) : mcpError(result.text);
+  }
+  if (name === "status") {
+    const status = await botStatusImpl({ config, botId: mcpSelectionKey(input.bot) });
+    return mcpResult(`${providerLabel(status.provider)} is active for ${status.botId}. Model: ${status.model}. Reasoning: ${status.reasoning}.`, { bot: status.botId, provider: status.provider, model: status.model, reasoning: status.reasoning });
+  }
+  if (name === "list_chats") {
+    const chats = await store.list();
+    return mcpResult(chats.length ? chats.map((chat) => `${chat.id}  ${chat.title}  (${chat.messages} messages, ${chat.updatedAt})`).join("\n") : "No chats yet.", { chats });
+  }
+  return null;
+}
+
+async function handleMcp({ request, response, body, config, store, runDelegationImpl, runControlImpl, botStatusImpl }) {
+  const wantsStream = String(request.headers.accept || "").includes("text/event-stream");
+  const reply = (payload, status = 200) => {
+    if (wantsStream) {
+      const send = sseWriter(response);
+      send("message", payload);
+      response.end();
+      return;
+    }
+    json(response, status, payload);
+  };
+  if (!body || body.jsonrpc !== "2.0" || typeof body.method !== "string") {
+    json(response, 400, { jsonrpc: "2.0", id: body?.id ?? null, error: { code: -32600, message: "Invalid JSON-RPC request" } });
+    return;
+  }
+  const { id, method, params = {} } = body;
+  if (id === undefined) {
+    response.writeHead(202);
+    response.end();
+    return;
+  }
+  try {
+    if (method === "initialize") {
+      reply({ jsonrpc: "2.0", id, result: {
+        protocolVersion: typeof params.protocolVersion === "string" ? params.protocolVersion : MCP_PROTOCOL_VERSION,
+        capabilities: { tools: { listChanged: false } },
+        serverInfo: { name: "grokrouter", version: ROUTER_VERSION },
+        instructions: "delegate runs a task on this Bot computer with its selected provider and returns the GrokRouter trailer; control changes a selection; list_chats and status inspect it.",
+      } });
+      return;
+    }
+    if (method === "ping") {
+      reply({ jsonrpc: "2.0", id, result: {} });
+      return;
+    }
+    if (method === "tools/list") {
+      reply({ jsonrpc: "2.0", id, result: { tools: MCP_TOOLS } });
+      return;
+    }
+    if (method === "tools/call") {
+      const name = String(params.name || "");
+      let send = null;
+      if (wantsStream) send = sseWriter(response);
+      const progressToken = params._meta?.progressToken;
+      let progressCount = 0;
+      const onProgress = (line) => {
+        if (send && progressToken !== undefined) {
+          progressCount += 1;
+          send("message", { jsonrpc: "2.0", method: "notifications/progress", params: { progressToken, progress: progressCount, message: line } });
+        }
+      };
+      const result = await mcpToolCall({ name, args: params.arguments, config, store, runDelegationImpl, runControlImpl, botStatusImpl, onProgress });
+      const payload = result
+        ? { jsonrpc: "2.0", id, result }
+        : { jsonrpc: "2.0", id, error: { code: -32602, message: `Unknown tool ${name}` } };
+      if (send) {
+        send("message", payload);
+        response.end();
+      } else {
+        json(response, 200, payload);
+      }
+      return;
+    }
+    reply({ jsonrpc: "2.0", id, error: { code: -32601, message: `Method not found: ${method}` } });
+  } catch (error) {
+    const payload = { jsonrpc: "2.0", id, error: { code: error?.code || -32603, message: redactDiagnostic(error?.message || error, 400) } };
+    if (response.headersSent) {
+      response.write(`event: message\ndata: ${JSON.stringify(payload)}\n\n`);
+      response.end();
+    } else {
+      json(response, 200, payload);
+    }
+  }
+}
+
 function sseWriter(response) {
   response.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
@@ -183,6 +341,23 @@ export function createChatServer({
       response.end(await pagePromise);
       return;
     }
+    if (path === "/mcp") {
+      if (!authorized(request, url, token)) {
+        json(response, 401, { error: "A valid GrokRouter token is required (Authorization: Bearer …)" });
+        return;
+      }
+      if (request.method === "POST") {
+        await handleMcp({ request, response, body: await readBody(request), config, store, runDelegationImpl, runControlImpl, botStatusImpl });
+        return;
+      }
+      if (request.method === "DELETE") {
+        response.writeHead(200);
+        response.end();
+        return;
+      }
+      json(response, 405, { error: "The GrokRouter MCP endpoint accepts POST requests" });
+      return;
+    }
     if (!path.startsWith("/api/")) {
       json(response, 404, { error: "Not found" });
       return;
@@ -192,7 +367,7 @@ export function createChatServer({
       return;
     }
     if (request.method === "GET" && path === "/api/health") {
-      json(response, 200, { ok: true, version: ROUTER_VERSION, mode: "delegation", enabled: config.enabled !== false, providers: config.providers || [] });
+      json(response, 200, { ok: true, version: ROUTER_VERSION, mode: "delegation", enabled: config.enabled !== false, providers: config.providers || [], mcp: "/mcp" });
       return;
     }
     if (request.method === "GET" && path === "/api/chats") {
