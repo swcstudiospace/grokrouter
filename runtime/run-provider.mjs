@@ -1907,8 +1907,9 @@ export function parseAnthropicAccountFile(raw) {
   try {
     data = JSON.parse(String(raw || ""));
   } catch {
-    return {};
+    return null;
   }
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
   const account = data?.oauthAccount && typeof data.oauthAccount === "object" ? data.oauthAccount : {};
   return {
     organizationRateLimitTier: anthropicSafeToken(account.organizationRateLimitTier),
@@ -3339,7 +3340,9 @@ async function main() {
     let matchedAccount = false;
     for (const candidate of anthropicAccountCandidates(status, process.env.HOME || "")) {
       try {
-        account = parseAnthropicAccountFile(await readFile(candidate, "utf8"));
+        const parsed = parseAnthropicAccountFile(await readFile(candidate, "utf8"));
+        if (!parsed) continue;
+        account = parsed;
         matchedAccount = true;
         break;
       } catch {

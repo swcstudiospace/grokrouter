@@ -89,6 +89,7 @@ test("Anthropic plan tier is read only from the active CLI config directory", ()
   assert.deepEqual(anthropicAccountCandidates({}, "/home/box"), ["/home/box/.claude.json"]);
   assert.deepEqual(anthropicAccountCandidates({ configDirectory: "relative/.claude" }, "/home/box"), ["/home/box/.claude.json"]);
   assert.deepEqual(anthropicAccountCandidates({ configDirectory: "/tmp/../etc/.claude" }, "/tmp/../etc"), []);
+  assert.equal(parseAnthropicAccountFile("{"), null);
 });
 
 test("a failed turn records its code and hint, and doctor reports the history", async () => {
