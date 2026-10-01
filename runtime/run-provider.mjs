@@ -1882,13 +1882,23 @@ function anthropicConfigDirectory(value) {
   return value;
 }
 
-/** Account file candidates for the CLI that produced this status. Never HOME by assumption. */
-export function anthropicAccountCandidates(status) {
+/**
+ * Account files for the CLI that produced this status. A reported config
+ * directory never falls back to HOME. A status that omits it uses the default
+ * account file, which is where `claude auth status` without configDirectory
+ * still stores the plan tier.
+ */
+export function anthropicAccountCandidates(status, home = "") {
   const configDirectory = anthropicConfigDirectory(status?.configDirectory);
-  if (!configDirectory) return [];
-  const candidates = [join(configDirectory, ".claude.json")];
-  if (configDirectory.endsWith("/.claude")) candidates.push(join(dirname(configDirectory), ".claude.json"));
-  return candidates;
+  if (configDirectory) {
+    const candidates = [join(configDirectory, ".claude.json")];
+    if (configDirectory.endsWith("/.claude")) candidates.push(join(dirname(configDirectory), ".claude.json"));
+    return candidates;
+  }
+  if (typeof home === "string" && home.startsWith("/") && !home.includes("\0") && !home.split("/").includes("..")) {
+    return [join(home, ".claude.json")];
+  }
+  return [];
 }
 
 /** Reads only the plan fields. The account file also holds identity and tokens. */
@@ -3327,7 +3337,7 @@ async function main() {
     const status = parseAnthropicAuthStatus(raw) || { loggedIn: false, authMethod: "", subscriptionType: "", apiProvider: "", configDirectory: "" };
     let account = {};
     let matchedAccount = false;
-    for (const candidate of anthropicAccountCandidates(status)) {
+    for (const candidate of anthropicAccountCandidates(status, process.env.HOME || "")) {
       try {
         account = parseAnthropicAccountFile(await readFile(candidate, "utf8"));
         matchedAccount = true;

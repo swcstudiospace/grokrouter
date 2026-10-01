@@ -81,13 +81,14 @@ test("Anthropic billing status keeps the plan tier and drops identity and tokens
 });
 
 test("Anthropic plan tier is read only from the active CLI config directory", () => {
-  assert.deepEqual(anthropicAccountCandidates({ configDirectory: "/home/box/.claude" }), [
+  assert.deepEqual(anthropicAccountCandidates({ configDirectory: "/home/box/.claude" }, "/home/other"), [
     "/home/box/.claude/.claude.json",
     "/home/box/.claude.json",
   ]);
-  assert.deepEqual(anthropicAccountCandidates({ configDirectory: "/tmp/other-config" }), ["/tmp/other-config/.claude.json"]);
-  assert.deepEqual(anthropicAccountCandidates({ configDirectory: "relative/.claude" }), []);
-  assert.deepEqual(anthropicAccountCandidates({ configDirectory: "/tmp/../etc/.claude" }), []);
+  assert.deepEqual(anthropicAccountCandidates({ configDirectory: "/tmp/other-config" }, "/home/box"), ["/tmp/other-config/.claude.json"]);
+  assert.deepEqual(anthropicAccountCandidates({}, "/home/box"), ["/home/box/.claude.json"]);
+  assert.deepEqual(anthropicAccountCandidates({ configDirectory: "relative/.claude" }, "/home/box"), ["/home/box/.claude.json"]);
+  assert.deepEqual(anthropicAccountCandidates({ configDirectory: "/tmp/../etc/.claude" }, "/tmp/../etc"), []);
 });
 
 test("a failed turn records its code and hint, and doctor reports the history", async () => {
