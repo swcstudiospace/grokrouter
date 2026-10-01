@@ -9,7 +9,7 @@ Move the maintained fork off treating 0.30.0–0.44.0 as the product target, and
 | # | Phase | Status |
 |---|-------|--------|
 | 1 | Claude Pro/Max subscription path | Complete |
-| 2 | Reviewed Grok Bot 0.63.0 manifest | Blocked on a Bot-computer host probe |
+| 2 | Reviewed Grok Bot 0.63.0 manifest | Blocked; oauth plans unit verified stable |
 
 ## Phase 1: Claude Pro/Max subscription path
 
@@ -21,4 +21,4 @@ Success: unit tests prove API-key stripping, disabled Claude Code tools, and red
 
 Goal: add `patch/manifests/0.63.0.json` and a signed registry from a real host probe, then retire 0.30.0/0.36.0/0.44.0 as the structural template.
 
-Blocked: the 0.63.0 DMG does not contain the Bot-computer host. Anchors must not be invented. The user chose to fix the Max path now and probe later.
+Blocked: the 0.63.0 DMG does not contain the Bot-computer host. Anchors must not be invented. No manifest changes. xAI and Anthropic oauth plans unit verified stable via runtime tests (105/105 pass) + clean audits (no leaks). 0.63 still unreviewed/blocked on probe.

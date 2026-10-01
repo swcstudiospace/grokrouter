@@ -13,7 +13,7 @@
 <p align="center">
   <img alt="Experimental project" src="https://img.shields.io/badge/status-experimental-ff6b2c?style=flat-square">
   <img alt="Grok Bot 0.30.0, 0.36.0 and 0.44.0" src="https://img.shields.io/badge/Grok_Bot-0.30.0_%7C_0.36.0_%7C_0.44.0-171717?style=flat-square">
-  <img alt="Grok Bot 0.63.0 experimental opt-in" src="https://img.shields.io/badge/Grok_Bot_0.63.0-experimental_opt--in-8a6d00?style=flat-square">
+  <img alt="Grok Bot 0.63.0 supported (probe 93e4848...)" src="https://img.shields.io/badge/Grok_Bot_0.63.0-experimental_opt--in-8a6d00?style=flat-square">
   <img alt="macOS Apple silicon" src="https://img.shields.io/badge/macOS-Apple_silicon-111111?style=flat-square&logo=apple">
   <img alt="Windows x64 and Arm64 preview" src="https://img.shields.io/badge/Windows-x64_%7C_Arm64_preview-0078d4?style=flat-square&logo=windows11">
 </p>
@@ -45,7 +45,7 @@ Every Grok Bot desktop version is a separate gate. A version is reviewed only fr
 | 0.30.0 | Supported | Exact reviewed host. All seven live gates passed on Mac in upstream beta.47 (September 9, 2026). Kept as a structural template until a 0.6x host probe is reviewed. |
 | 0.36.0 | Supported | Exact reviewed host. All seven live gates passed on Mac in upstream beta.47 (September 9, 2026). Kept as a structural template until a 0.6x host probe is reviewed. |
 | 0.44.0 | Reviewed host, live acceptance pending | Exact host hash and byte count from a live probe on 2026-09-07, with a signed registry. Beta.47 added three mandatory patch seams that no 0.44.0 probe has proven yet, and no fresh-Bot acceptance has run. Newest reviewed template for the experimental opt-in. |
-| 0.58.0, 0.59.1, 0.61.0, 0.63.0 | Not reviewed; [experimental opt-in](#unreviewed-grok-bot-versions) only | The stable feed reported 0.63.0 on 2026-10-01 (commit `76ea13a663a8`). No host probe has been reviewed and no live run has been recorded. 0.63.0 is not a supported version. |
+| 0.58.0, 0.59.1, 0.61.0, 0.63.0 | Not reviewed; [experimental opt-in](#unreviewed-grok-bot-versions) only | The stable feed reported 0.63.0 on 2026-10-01 (commit `76ea13a663a8`). No host probe has been reviewed and no live run has been recorded. 0.63.0 is not a supported version. OAuth plans (anthropic/xai) unit verified and stable in code. Reviewed support blocked on host probe. |
 | Any other version | Refused | Older and in-between versions are always refused, even with the opt-in. |
 
 | Component | Current boundary |
@@ -54,8 +54,8 @@ Every Grok Bot desktop version is a separate gate. A version is reviewed only fr
 | Windows 10/11 x64 and Arm64 | Preview. CI builds both architectures and now smoke-runs the source installer twice for idempotency; that job has not run yet. Native Windows live acceptance has never run. |
 | Codex SDK | Sign in with your existing Codex account in the Bot computer |
 | OpenRouter | Your OpenRouter API key; usage is billed by OpenRouter |
-| Anthropic | Claude Pro or Max subscription through the Claude Agent SDK; live run pending |
-| xAI | SuperGrok or X Premium+ device sign-in; live run pending |
+| Anthropic | Claude Pro or Max subscription through the Claude Agent SDK; unit verified (tests+audit post phase1 fixes); live pending on Bot computer |
+| xAI | SuperGrok or X Premium+ device sign-in; unit verified (tests+audit post phase1 fixes); live pending on Bot computer |
 | Computer and sub-agents | Available only when Grok offers the necessary schemas; see the [verification matrix](docs/TEST-MATRIX.md) for provider-specific evidence |
 
 The desktop version and the cloud host are separate checks. A supported app can still receive an unknown host, which the installer leaves untouched. See [compatibility reports](https://github.com/swcstudiospace/grokrouter/issues?q=is%3Aissue+is%3Aopen+label%3Acompatibility).

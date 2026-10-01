@@ -3,7 +3,7 @@ import CryptoKit
 import Foundation
 import Vision
 
-private let supportedGrokVersions = ["0.30.0", "0.36.0", "0.44.0"]
+private let supportedGrokVersions = ["0.30.0", "0.36.0", "0.44.0", "0.63.0"]
 private let supportedGrokVersion = supportedGrokVersions.joined(separator: ", ")
 // Set together by validateGrokApp; empty until an app passes validation.
 private var detectedGrokVersion = ""
@@ -237,7 +237,7 @@ final class RouterInstallerController: NSObject, NSApplicationDelegate {
         iconView.widthAnchor.constraint(equalToConstant: 88).isActive = true
         iconView.heightAnchor.constraint(equalToConstant: 88).isActive = true
 
-        let eyebrow = NSTextField(labelWithString: "GROK BOT 0.30.0 · 0.36.0 · 0.44.0")
+        let eyebrow = NSTextField(labelWithString: "GROK BOT 0.30.0 · 0.36.0 · 0.44.0 · 0.63.0")
         eyebrow.font = .monospacedSystemFont(ofSize: 11, weight: .semibold)
         eyebrow.textColor = NSColor(calibratedRed: 1.0, green: 0.48, blue: 0.12, alpha: 1)
         let title = NSTextField(labelWithString: "Bring your own model.")
