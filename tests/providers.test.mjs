@@ -286,4 +286,10 @@ test("Anthropic runs through the Claude Agent SDK, resumes a session, and return
     }),
     /ended with error_max_turns/,
   );
+  await assert.rejects(
+    runAnthropic({}, [user("hi")], [], () => function* query() {
+      yield { type: "result", subtype: "error_during_execution", errors: ["extra usage is out of credits"], result: "" };
+    }),
+    /out of credits/,
+  );
 });

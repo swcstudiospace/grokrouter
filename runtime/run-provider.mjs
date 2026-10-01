@@ -1872,7 +1872,23 @@ export function parseAnthropicAuthStatus(raw) {
     authMethod: anthropicSafeToken(status.authMethod),
     subscriptionType: anthropicSafeToken(status.subscriptionType),
     apiProvider: anthropicSafeToken(status.apiProvider),
+    configDirectory: anthropicConfigDirectory(status.configDirectory),
   };
+}
+
+function anthropicConfigDirectory(value) {
+  if (typeof value !== "string" || !value.startsWith("/") || value.includes("\0")) return "";
+  if (value.split("/").includes("..")) return "";
+  return value;
+}
+
+/** Account file candidates for the CLI that produced this status. Never HOME by assumption. */
+export function anthropicAccountCandidates(status) {
+  const configDirectory = anthropicConfigDirectory(status?.configDirectory);
+  if (!configDirectory) return [];
+  const candidates = [join(configDirectory, ".claude.json")];
+  if (configDirectory.endsWith("/.claude")) candidates.push(join(dirname(configDirectory), ".claude.json"));
+  return candidates;
 }
 
 /** Reads only the plan fields. The account file also holds identity and tokens. */
@@ -1954,7 +1970,10 @@ export async function runAnthropic(config, messages, tools, queryFactory = null)
       if (typeof message?.session_id === "string") sessionId = message.session_id;
       if (message?.type === "result") {
         if (message.subtype && message.subtype !== "success") {
-          throw new Error(`Claude Agent SDK ended with ${message.subtype}`);
+          const detail = anthropicFailureDetail(message);
+          throw new Error(detail
+            ? `Claude Agent SDK ended with ${message.subtype}: ${detail}`
+            : `Claude Agent SDK ended with ${message.subtype}`);
         }
         finalText = typeof message.result === "string" ? message.result : "";
         usage = message.usage || {};
@@ -1979,6 +1998,17 @@ export async function runAnthropic(config, messages, tools, queryFactory = null)
     model,
     threadId: outcome.sessionId,
   };
+}
+
+function anthropicFailureDetail(message) {
+  const parts = [];
+  if (Array.isArray(message?.errors)) {
+    for (const item of message.errors) {
+      if (typeof item === "string" && item.trim()) parts.push(item.trim());
+    }
+  }
+  if (typeof message?.error === "string" && message.error.trim()) parts.push(message.error.trim());
+  return redactDiagnostic(parts.join("; "), 400);
 }
 
 async function createCodexClient(config) {
@@ -3294,15 +3324,19 @@ async function main() {
   }
   if (process.argv.includes("--anthropic-billing")) {
     const raw = process.stdin.isTTY ? "" : await readStdin(64 * 1024);
-    const status = parseAnthropicAuthStatus(raw) || { loggedIn: false, authMethod: "", subscriptionType: "", apiProvider: "" };
+    const status = parseAnthropicAuthStatus(raw) || { loggedIn: false, authMethod: "", subscriptionType: "", apiProvider: "", configDirectory: "" };
     let account = {};
-    if (process.env.GROKBOT_ROUTER_ACCOUNT_FILE) {
+    let matchedAccount = false;
+    for (const candidate of anthropicAccountCandidates(status)) {
       try {
-        account = parseAnthropicAccountFile(await readFile(process.env.GROKBOT_ROUTER_ACCOUNT_FILE, "utf8"));
+        account = parseAnthropicAccountFile(await readFile(candidate, "utf8"));
+        matchedAccount = true;
+        break;
       } catch {
-        account = {};
+        // The next candidate still belongs to this login, not to HOME.
       }
     }
+    if (status.loggedIn && !matchedAccount) account = { organizationRateLimitTier: "unverified" };
     if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) account = { ...account, apiKeyPresent: true };
     process.stdout.write(`${formatAnthropicBilling(status, account)}\n`);
     return;

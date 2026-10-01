@@ -342,10 +342,10 @@ print(str(value).upper())' <<< "$doctor_output")"
     printf 'Anthropic\n'
     if resolve_claude_cli; then
       printf '  CLI: %s\n' "$(basename "$(dirname "$CLAUDE_CLI")")"
-      # Never print auth status raw: it includes the account email. The
-      # formatter keeps signed-in, method, subscription, and plan tier only.
+      # Never print auth status raw: it includes the account email. Plan tier
+      # is read only from files beside the CLI's reported config directory.
       status_json="$("$CLAUDE_CLI" auth status 2>/dev/null || true)"
-      printf '%s' "$status_json" | GROKBOT_ROUTER_ACCOUNT_FILE="${HOME}/.claude.json" node "$PROVIDER_RUNNER" --anthropic-billing | sed 's/^/  /'
+      printf '%s' "$status_json" | node "$PROVIDER_RUNNER" --anthropic-billing | sed 's/^/  /'
     else
       printf '  Unavailable: %s\n' "$CLAUDE_CLI_REASON"
     fi

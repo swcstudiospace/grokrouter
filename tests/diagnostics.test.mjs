@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  anthropicAccountCandidates,
   classifyProviderError,
   formatAnthropicBilling,
   formatFailures,
@@ -77,6 +78,16 @@ test("Anthropic billing status keeps the plan tier and drops identity and tokens
     classifyProviderError(new Error("--dangerously-skip-permissions cannot be used with root/sudo privileges"), "anthropic").code,
     "runtime",
   );
+});
+
+test("Anthropic plan tier is read only from the active CLI config directory", () => {
+  assert.deepEqual(anthropicAccountCandidates({ configDirectory: "/home/box/.claude" }), [
+    "/home/box/.claude/.claude.json",
+    "/home/box/.claude.json",
+  ]);
+  assert.deepEqual(anthropicAccountCandidates({ configDirectory: "/tmp/other-config" }), ["/tmp/other-config/.claude.json"]);
+  assert.deepEqual(anthropicAccountCandidates({ configDirectory: "relative/.claude" }), []);
+  assert.deepEqual(anthropicAccountCandidates({ configDirectory: "/tmp/../etc/.claude" }), []);
 });
 
 test("a failed turn records its code and hint, and doctor reports the history", async () => {
