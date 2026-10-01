@@ -639,6 +639,12 @@ export function classifyProviderError(error, provider = "") {
   const spec = PROVIDERS[provider] || null;
   const label = spec ? spec.label : "The provider";
   const signIn = spec ? spec.signIn : "the provider sign-in";
+  if (/dangerously-skip-permissions|cannot be used with root\/sudo/.test(text)) {
+    return { code: "runtime", hint: "Claude Code refused permission bypass. Reinstall or run Repair Router; subscription turns do not need that bypass." };
+  }
+  if (provider === "anthropic" && /out of credit|extra usage|credit balance|insufficient credit|subscription limit/.test(text)) {
+    return { code: "rate-limit", hint: "The Claude Pro/Max subscription or its extra usage rejected the turn. Run grokbot-router doctor and read subscription= and extraUsage=. Sign in again with grokbot-router auth anthropic if signedIn is not true." };
+  }
   if (status === 401 || status === 403
     || /not signed in|no longer valid|sign-in expired|needs openrouter_api_key|invalid api key|unauthorized|forbidden/.test(text)) {
     return { code: "auth", hint: `${label} rejected the credential. Sign in again: ${signIn}.` };
@@ -1832,11 +1838,77 @@ function codexThreadOptions(config) {
 }
 
 const ANTHROPIC_EFFORT = { minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "xhigh" };
+const ANTHROPIC_API_ENV_KEYS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY_FILE", "CLAUDE_CODE_SIMPLE"];
+const ANTHROPIC_SAFE_TOKEN = /^[A-Za-z0-9_.:-]{1,80}$/;
+
+function anthropicSafeToken(value) {
+  return typeof value === "string" && ANTHROPIC_SAFE_TOKEN.test(value) ? value : "";
+}
+
+/**
+ * Subscription auth must win. An API key in the parent environment makes the
+ * Claude CLI bill the API instead of the Pro/Max plan, while /models can still
+ * show a packaged model list. CLAUDE_CODE_OAUTH_TOKEN is kept: that is the
+ * subscription token, not an API key.
+ */
+export function anthropicSubscriptionEnv(baseEnv = process.env, extras = {}) {
+  const env = { ...baseEnv };
+  for (const key of ANTHROPIC_API_ENV_KEYS) delete env[key];
+  if (typeof extras.oauthToken === "string" && extras.oauthToken) env.CLAUDE_CODE_OAUTH_TOKEN = extras.oauthToken;
+  env.CLAUDE_AGENT_SDK_CLIENT_APP = extras.clientApp || `grokrouter/${ROUTER_VERSION}`;
+  return env;
+}
+
+export function parseAnthropicAuthStatus(raw) {
+  let status;
+  try {
+    status = JSON.parse(String(raw || ""));
+  } catch {
+    return null;
+  }
+  if (!status || typeof status !== "object") return null;
+  return {
+    loggedIn: status.loggedIn === true,
+    authMethod: anthropicSafeToken(status.authMethod),
+    subscriptionType: anthropicSafeToken(status.subscriptionType),
+    apiProvider: anthropicSafeToken(status.apiProvider),
+  };
+}
+
+/** Reads only the plan fields. The account file also holds identity and tokens. */
+export function parseAnthropicAccountFile(raw) {
+  let data;
+  try {
+    data = JSON.parse(String(raw || ""));
+  } catch {
+    return {};
+  }
+  const account = data?.oauthAccount && typeof data.oauthAccount === "object" ? data.oauthAccount : {};
+  return {
+    organizationRateLimitTier: anthropicSafeToken(account.organizationRateLimitTier),
+    extraUsageDisabledReason: anthropicSafeToken(data?.cachedExtraUsageDisabledReason),
+  };
+}
+
+export function formatAnthropicBilling(status, account = {}) {
+  const parts = [
+    `signedIn=${status?.loggedIn === true}`,
+    `authMethod=${status?.authMethod || "unknown"}`,
+    `subscription=${status?.subscriptionType || "none"}`,
+  ];
+  if (account.organizationRateLimitTier) parts.push(`rateLimitTier=${account.organizationRateLimitTier}`);
+  if (account.extraUsageDisabledReason) parts.push(`extraUsage=${account.extraUsageDisabledReason}`);
+  if (account.apiKeyPresent) parts.push("apiKeyInEnvironment=ignored");
+  return parts.join(" ");
+}
 
 function anthropicPrompt(config, messages, tools, resuming) {
   return codexPrompt({ ...config, codexModel: config.anthropicModel || "claude-sonnet-5" }, messages, tools, resuming)
     .replace("the active provider is Codex SDK", "the active provider is Anthropic (Claude Agent SDK)")
-    .replace("Use Codex's native shell, file editing, and web tools", "Use Claude Code's native shell, file editing, and web tools");
+    .replace(
+      "Use Codex's native shell, file editing, and web tools for work inside /workspace.",
+      "Do not use Claude Code's own shell, file, or web tools. They are disabled so this turn uses the Claude subscription once and returns the structured object. Outer Grok tools are the only tools.",
+    );
 }
 
 async function createAnthropicQuery() {
@@ -1847,8 +1919,9 @@ async function createAnthropicQuery() {
 /**
  * Anthropic provider. It never touches a claude.ai OAuth token directly: the
  * Claude Agent SDK spawns its bundled `claude` binary, which owns sign-in and
- * bills a subscription's Agent SDK credit, the path Anthropic permits for
- * third-party harnesses.
+ * bills the Pro/Max subscription. API-key environment variables are stripped
+ * so they cannot shadow that login. Claude Code's own tools stay off; Grok
+ * executes outer tools from the structured result.
  */
 export async function runAnthropic(config, messages, tools, queryFactory = null) {
   const query = queryFactory ? queryFactory() : await createAnthropicQuery();
@@ -1863,13 +1936,15 @@ export async function runAnthropic(config, messages, tools, queryFactory = null)
     cwd: config.workingDirectory || "/workspace",
     model,
     effort: ANTHROPIC_EFFORT[config.anthropicReasoning] || "medium",
-    permissionMode: "bypassPermissions",
-    allowDangerouslySkipPermissions: true,
+    tools: [],
+    maxTurns: 1,
+    settingSources: [],
     ...(config.anthropicExecutablePath ? { pathToClaudeCodeExecutable: config.anthropicExecutablePath } : {}),
     ...(resuming ? { resume: config.anthropicSessionId } : {}),
-    // A native text task is data processing: no Claude Code tools, one turn.
-    ...(config.nativeTextTask ? { tools: [], maxTurns: 1 } : {}),
-    env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: `grokrouter/${ROUTER_VERSION}` },
+    env: anthropicSubscriptionEnv(process.env, {
+      oauthToken: config.anthropicOauthToken,
+      clientApp: `grokrouter/${ROUTER_VERSION}`,
+    }),
   };
   const run = async (runOptions) => {
     let sessionId = runOptions.resume || null;
@@ -3215,6 +3290,21 @@ async function main() {
   }
   if (process.argv.includes("--xai-probe")) {
     await probeXai(await loadRuntimeConfig());
+    return;
+  }
+  if (process.argv.includes("--anthropic-billing")) {
+    const raw = process.stdin.isTTY ? "" : await readStdin(64 * 1024);
+    const status = parseAnthropicAuthStatus(raw) || { loggedIn: false, authMethod: "", subscriptionType: "", apiProvider: "" };
+    let account = {};
+    if (process.env.GROKBOT_ROUTER_ACCOUNT_FILE) {
+      try {
+        account = parseAnthropicAccountFile(await readFile(process.env.GROKBOT_ROUTER_ACCOUNT_FILE, "utf8"));
+      } catch {
+        account = {};
+      }
+    }
+    if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) account = { ...account, apiKeyPresent: true };
+    process.stdout.write(`${formatAnthropicBilling(status, account)}\n`);
     return;
   }
   const errorsFlag = process.argv.indexOf("--recent-errors");

@@ -6,7 +6,10 @@ import test from "node:test";
 
 import {
   classifyProviderError,
+  formatAnthropicBilling,
   formatFailures,
+  parseAnthropicAccountFile,
+  parseAnthropicAuthStatus,
   probeXai,
   recentFailures,
   rejectsRequestShape,
@@ -41,6 +44,39 @@ test("provider failures are classified into an actionable code and hint", () => 
   }
   assert.match(classifyProviderError(new Error("bad"), "xai").hint, /grokbot-router errors/);
   assert.match(classifyProviderError({ message: "nope", status: 401 }, "anthropic").hint, /grokbot-router auth anthropic/);
+});
+
+test("Anthropic billing status keeps the plan tier and drops identity and tokens", () => {
+  const raw = JSON.stringify({
+    loggedIn: true,
+    authMethod: "claude.ai",
+    subscriptionType: "max",
+    apiProvider: "firstParty",
+    email: "person@example.com",
+    orgName: "person@example.com's Organization",
+  });
+  const status = parseAnthropicAuthStatus(raw);
+  const account = parseAnthropicAccountFile(JSON.stringify({
+    oauthAccount: {
+      emailAddress: "person@example.com",
+      organizationRateLimitTier: "default_claude_max_20x",
+      accessToken: "sk-ant-oat-secret",
+    },
+    cachedExtraUsageDisabledReason: "out_of_credits",
+  }));
+  const line = formatAnthropicBilling(status, { ...account, apiKeyPresent: true });
+  assert.equal(line, "signedIn=true authMethod=claude.ai subscription=max rateLimitTier=default_claude_max_20x extraUsage=out_of_credits apiKeyInEnvironment=ignored");
+  assert.equal(line.includes("person@example.com"), false);
+  assert.equal(line.includes("sk-ant-oat-secret"), false);
+  assert.equal(parseAnthropicAuthStatus("not-json"), null);
+  assert.match(
+    classifyProviderError(new Error("extra usage is out of credits"), "anthropic").hint,
+    /subscription=/,
+  );
+  assert.equal(
+    classifyProviderError(new Error("--dangerously-skip-permissions cannot be used with root/sudo privileges"), "anthropic").code,
+    "runtime",
+  );
 });
 
 test("a failed turn records its code and hint, and doctor reports the history", async () => {

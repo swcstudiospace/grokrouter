@@ -90,7 +90,9 @@ test("Anthropic discovery reads the Agent SDK model list without running a turn"
   let opened = 0;
   let closed = 0;
   let iterated = 0;
+  let listOptions;
   const queryFactory = () => ({ prompt, options }) => {
+    listOptions = options;
     opened += 1;
     return {
       async *[Symbol.asyncIterator]() { iterated += 1; },
@@ -114,6 +116,9 @@ test("Anthropic discovery reads the Agent SDK model list without running a turn"
     assert.equal(opened, 1);
     assert.equal(closed, 1, "the control-only query is closed");
     assert.equal(iterated, 0, "no turn is billed to list models");
+    assert.equal(listOptions.permissionMode, undefined);
+    assert.deepEqual(listOptions.settingSources, []);
+    assert.deepEqual(listOptions.tools, []);
 
     const failing = () => () => { throw new Error("claude binary missing"); };
     await rm(join(root, "catalog.anthropic.json"), { force: true });
