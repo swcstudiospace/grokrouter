@@ -87,7 +87,7 @@ This is why the acceptance test always creates two new Bots: the first is switch
 ## Credentials and data boundaries
 
 - The OpenRouter key is saved through Grok Bot's protected Secrets store and loaded only when a request is made.
-- Anthropic sign-in belongs to the Claude Agent SDK's bundled binary; the router never handles a claude.ai OAuth token, which is the only third-party path Anthropic permits for subscriptions.
+- Anthropic sign-in belongs to the Claude Agent SDK's bundled binary (`claude auth login --claudeai`, or `setup-token` when the Bot terminal has no browser). The router never handles a claude.ai OAuth token and ignores an `ANTHROPIC_API_KEY` in the environment so a Pro/Max subscription is not shadowed by API billing. A model shown by `/models` is not proof that a turn billed the plan; `grokbot-router doctor` prints `signedIn` and `subscription` without the account email.
 - The xAI sign-in uses xAI's public device-code flow. Tokens live in an owner-only file inside the Bot computer, are refreshed automatically, and are sent only to `api.x.ai` or xAI's subscription proxy.
 - Provider credentials are not written to this repository, per-Bot state files or audit logs.
 - The chosen provider necessarily receives the conversation content and media needed to answer that routed turn.

@@ -113,7 +113,9 @@ async function discoverAnthropic(config, queryFactory) {
     prompt: (async function* empty() {})(),
     options: {
       cwd: config.workingDirectory || "/workspace",
-      permissionMode: "bypassPermissions",
+      tools: [],
+      maxTurns: 1,
+      settingSources: [],
       ...(config.anthropicExecutablePath ? { pathToClaudeCodeExecutable: config.anthropicExecutablePath } : {}),
     },
   });

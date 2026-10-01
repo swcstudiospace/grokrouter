@@ -74,7 +74,7 @@ Images are written to a private temporary directory and passed as Codex `local_i
 
 ## Anthropic bridge
 
-The Anthropic provider drives `@anthropic-ai/claude-agent-sdk`, which spawns its bundled `claude` binary. The binary owns sign-in (`grokbot-router auth anthropic` runs `claude auth login` in the Bot terminal) and bills a subscription's Agent SDK credit, so the router never touches a claude.ai OAuth token. The prompt and JSON `text` + `toolCalls` contract are shared with the Codex bridge; the per-Bot thread ID stores the SDK session ID and is reset by `/router reset`, a model change, or a failed resume.
+The Anthropic provider drives `@anthropic-ai/claude-agent-sdk`, which spawns its bundled `claude` binary. Sign-in is `grokbot-router auth anthropic`, which runs `claude auth login --claudeai` so the login is the Pro/Max subscription and not Console API billing. `setup-token` is the headless alternative. The router never copies a claude.ai token. Turns strip `ANTHROPIC_API_KEY` and related API-key variables so they cannot shadow that subscription, disable Claude Code's own tools, and load no filesystem settings. One structured reply comes back; Grok still executes outer tools. `/models` can show a packaged list even when a turn cannot bill the plan, so doctor prints `signedIn`, `subscription`, and `rateLimitTier` without the account email.
 
 ## xAI bridge
 

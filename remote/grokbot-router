@@ -138,7 +138,7 @@ usage() {
     "  doctor                         Verify runtime, host patch, and credentials" \
     "  repair [--no-restart]           Reapply the exact-gated host patch" \
     "  auth codex                     Start Codex device sign-in" \
-    "  auth anthropic                 Start the Claude Agent SDK sign-in" \
+    "  auth anthropic [setup-token]  Sign in to a Claude Pro/Max subscription" \
     "  auth xai                       Start the xAI Grok subscription sign-in" \
     "  provider PROVIDER              Change the default for new Bot threads" \
     "                                 (codex, openrouter, anthropic, or xai)" \
@@ -342,7 +342,10 @@ print(str(value).upper())' <<< "$doctor_output")"
     printf 'Anthropic\n'
     if resolve_claude_cli; then
       printf '  CLI: %s\n' "$(basename "$(dirname "$CLAUDE_CLI")")"
-      "$CLAUDE_CLI" auth status 2>&1 | sed -E 's/([A-Za-z0-9._%+-]+)@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/[account]/g' | sed 's/^/  /' || true
+      # Never print auth status raw: it includes the account email. Plan tier
+      # is read only from files beside the CLI's reported config directory.
+      status_json="$("$CLAUDE_CLI" auth status 2>/dev/null || true)"
+      printf '%s' "$status_json" | node "$PROVIDER_RUNNER" --anthropic-billing | sed 's/^/  /'
     else
       printf '  Unavailable: %s\n' "$CLAUDE_CLI_REASON"
     fi
@@ -392,10 +395,14 @@ PY
           printf 'ERROR: Anthropic sign-in is unavailable because %s\n' "$CLAUDE_CLI_REASON" >&2
           exit 1
         fi
-        # The bundled binary owns the Anthropic sign-in. Third-party use of a
-        # Claude subscription is permitted only through the Agent SDK, so the
-        # router never handles a claude.ai OAuth token itself.
-        exec "$CLAUDE_CLI" auth login
+        # `--claudeai` is the subscription. `--console` bills an API key and
+        # must not be how a Pro/Max plan signs in. setup-token is the headless
+        # path when the Bot terminal cannot finish a browser login. The CLI
+        # stores the credential; this script never copies it.
+        if [[ "${3:-}" == "setup-token" ]]; then
+          exec "$CLAUDE_CLI" setup-token
+        fi
+        exec "$CLAUDE_CLI" auth login --claudeai
         ;;
       xai)
         exec env GROKBOT_ROUTER_CONFIG="$CONFIG_PATH" node "$PROVIDER_RUNNER" --xai-login

@@ -490,7 +490,8 @@ class PatchSeamTests(unittest.TestCase):
         self.manifest["stockHosts"] = [{"sha256": router_patch.sha256(self.host), "bytes": self.host.stat().st_size}]
         self.assertEqual(router_patch.inspect_host(self.host, self.manifest)["patchAnchorCounts"], [1, 1, 1])
         self.assertIn("PATCHANCHORS=1,1,1", router_patch.compatibility_report(self.host, self.manifest))
-        for index, seam in enumerate(router_patch.PATCH_ANCHORS):
+        logical_seams = list(router_patch.GROUP_DISPATCH_CANDIDATES) + list(router_patch.PATCH_ANCHORS)
+        for index, seam in enumerate(logical_seams):
             with self.subTest(seam=seam):
                 source = STOCK_SOURCE.replace(seam, seam.replace("const ", "let ", 1))
                 self.host.write_text(source)
@@ -562,17 +563,17 @@ class UnreviewedVersionTests(unittest.TestCase):
                 self.assertFalse(self.backup.exists())
 
     def test_newer_opt_in_installs_doctors_and_restores_exactly(self):
-        installed = self.run_cli("--unreviewed-version", "0.61.0")
+        installed = self.run_cli("--unreviewed-version", "99.0.0")
         self.assertEqual(installed.returncode, 0, installed.stderr)
         result = json.loads(installed.stdout)
         self.assertEqual(result["status"], "installed")
         self.assertEqual(result["stockTrust"], router_patch.TRUST_UNREVIEWED)
-        self.assertEqual(result["unreviewedVersion"], "0.61.0")
+        self.assertEqual(result["unreviewedVersion"], "99.0.0")
         self.assertEqual(result["templateManifestVersion"], "0.44.0")
         self.assertEqual(self.host.read_text(), router_patch.patch_text(self.NEW_BUILD))
         self.assertEqual(self.backup.read_text(), self.NEW_BUILD)
 
-        health = json.loads(self.run_cli("--doctor", "--unreviewed-version", "0.61.0").stdout)
+        health = json.loads(self.run_cli("--doctor", "--unreviewed-version", "99.0.0").stdout)
         self.assertTrue(health["ok"])
         self.assertEqual(health["stockBackupTrust"], router_patch.TRUST_UNREVIEWED)
         # Without the opt-in the same backup is not trusted, so repair and
@@ -581,9 +582,9 @@ class UnreviewedVersionTests(unittest.TestCase):
         with self.assertRaises(router_patch.PatchError):
             router_patch.restore(self.host, self.backup, self.manifest, False, False)
         self.assertEqual(
-            json.loads(self.run_cli("--unreviewed-version", "0.61.0").stdout)["status"], "already-installed")
+            json.loads(self.run_cli("--unreviewed-version", "99.0.0").stdout)["status"], "already-installed")
 
-        restored = self.run_cli("--restore", "--unreviewed-version", "0.61.0")
+        restored = self.run_cli("--restore", "--unreviewed-version", "99.0.0")
         self.assertEqual(restored.returncode, 0, restored.stderr)
         self.assertEqual(self.host.read_bytes(), self.NEW_BUILD.encode())
 
@@ -598,14 +599,14 @@ class UnreviewedVersionTests(unittest.TestCase):
         for label, source in variants.items():
             with self.subTest(label=label):
                 self.host.write_text(source)
-                with self.assertRaisesRegex(router_patch.PatchError, "UNREVIEWEDVERSION=0.61.0"):
+                with self.assertRaisesRegex(router_patch.PatchError, "UNREVIEWEDVERSION=99.0.0"):
                     router_patch.install(self.host, self.backup, self.manifest, False, False,
-                                         unreviewed_version="0.61.0")
+                                         unreviewed_version="99.0.0")
                 self.assertEqual(self.host.read_text(), source)
                 self.assertFalse(self.backup.exists())
         self.host.write_text(self.NEW_BUILD)
         self.manifest["anchorVerifiedHosts"] = router_patch.validate_anchor_policy(None)
-        self.assertIsNone(router_patch.host_trust(self.host, self.manifest, unreviewed_version="0.61.0"))
+        self.assertIsNone(router_patch.host_trust(self.host, self.manifest, unreviewed_version="99.0.0"))
 
     def test_template_is_the_newest_manifest_whose_anchors_the_host_proves(self):
         manifests = Path(self.temporary.name) / "manifests"

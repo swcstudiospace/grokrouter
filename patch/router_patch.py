@@ -51,9 +51,15 @@ VERSION_PATTERN = re.compile(r"\d+\.\d+\.\d+")
 # requiredAnchors. Validation, probes, and diagnostics count them too, so a
 # live probe proves the whole patch surface, not only the manifest lines.
 PATCH_ANCHORS = (
-    "const memberResult = await runner.run(promptForAttempt, {",
     "const extraction = await extractMemories({",
     "const narrative = await summarizeEpisode({",
+)
+
+# Group member dispatch seam evolved; support the pre-0.63 and 0.63+ forms.
+# Exactly one must appear once.
+GROUP_DISPATCH_CANDIDATES = (
+    "const memberResult = await runner.run(promptForAttempt, {",
+    'const scoped = await runner.run(ctx, "snapshot", {',
 )
 
 
@@ -658,7 +664,12 @@ def is_trusted_stock(
 
 
 def patch_anchor_counts(source: str) -> list[int]:
-    return [source.count(anchor) for anchor in PATCH_ANCHORS]
+    group_count = 0
+    for cand in GROUP_DISPATCH_CANDIDATES:
+        if source.count(cand) == 1:
+            group_count = 1
+            break
+    return [group_count] + [source.count(anchor) for anchor in PATCH_ANCHORS]
 
 
 def inspect_host(
@@ -743,6 +754,10 @@ def validate_anchors(source: str, manifest: dict[str, Any]) -> None:
         count = source.count(anchor)
         if count != 1:
             raise PatchError(f"Host anchor count for {anchor!r} was {count}; expected 1")
+    # group dispatch: exactly one candidate
+    group_hits = sum(1 for cand in GROUP_DISPATCH_CANDIDATES if source.count(cand) == 1)
+    if group_hits != 1:
+        raise PatchError(f"Group dispatch seam: expected exactly one candidate to match once, got {group_hits}")
 
 
 def patch_text(source: str) -> str:
@@ -798,9 +813,13 @@ def patch_text(source: str) -> str:
     if identity_count != 1:
         raise PatchError(f"Session identity anchor count was {identity_count}; expected 1")
 
-    group_anchor = PATCH_ANCHORS[0]
-    if source.count(group_anchor) != 1:
-        raise PatchError("Group member dispatch anchor must occur exactly once")
+    group_anchor = None
+    for cand in GROUP_DISPATCH_CANDIDATES:
+        if source.count(cand) == 1:
+            group_anchor = cand
+            break
+    if group_anchor is None:
+        raise PatchError("Group member dispatch anchor must occur exactly once (no candidate matched)")
     source = source.replace(group_anchor, group_anchor + "\n" + """
                   grokBotRouterGroupContext: {
                     roomId: roomSession.id,

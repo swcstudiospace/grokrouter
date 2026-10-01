@@ -9,7 +9,7 @@ const WebSocket = require("ws");
 const { createWorker } = require("tesseract.js");
 
 const execFileAsync = promisify(execFile);
-const SUPPORTED_GROK_VERSIONS = ["0.30.0", "0.36.0", "0.44.0"];
+const SUPPORTED_GROK_VERSIONS = ["0.30.0", "0.36.0", "0.44.0", "0.63.0"];
 const SUPPORTED_GROK_VERSION = SUPPORTED_GROK_VERSIONS.join(", ");
 let detectedGrokVersion = "";
 let detectedGrokUnreviewed = false;

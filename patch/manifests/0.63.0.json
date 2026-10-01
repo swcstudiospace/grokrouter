@@ -1,0 +1,22 @@
+{
+  "grokBotVersion": "0.63.0",
+  "hostPath": "/home/box/sand-host/host-main.cjs",
+  "stockHosts": [
+    {
+      "sha256": "93e484827ea9fbc254f01c734116640b248878f9b0d9920fcff2befdd54560d4",
+      "bytes": 29110879
+    }
+  ],
+  "requiredAnchors": [
+    "function createMockPromptExecutor(options2)",
+    "createSession(onRequestId, sessionOptions)",
+    "const mockResponse = options2.agentMockResponse;",
+    "const mainSessionOptions = {"
+  ],
+  "routerMarker": "GROKBOT_MODEL_ROUTER_V45",
+  "anchorVerifiedHosts": {
+    "enabled": false,
+    "minBytes": 20000000,
+    "maxBytes": 40000000
+  }
+}

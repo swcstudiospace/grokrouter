@@ -224,22 +224,41 @@ test("Anthropic runs through the Claude Agent SDK, resumes a session, and return
     text: "",
     toolCalls: [{ toolCallId: "call-1", toolName: "Computer", argumentsJson: "{\"action\":\"screenshot\"}" }],
   });
-  const result = await runAnthropic(
-    { anthropicModel: "claude-sonnet-5", anthropicReasoning: "xhigh", anthropicSessionId: "resume-me", tempDirectory: tmpdir(), workingDirectory: "/workspace" },
-    [user("Take a screenshot")],
-    [{ name: "Computer", inputSchema: { type: "object" } }],
-    () => makeQuery(structured),
-  );
-  assert.equal(calls[0].options.resume, "resume-me");
-  assert.equal(calls[0].options.model, "claude-sonnet-5");
-  assert.equal(calls[0].options.effort, "xhigh");
-  assert.equal(calls[0].options.cwd, "/workspace");
-  assert.equal(calls[0].options.permissionMode, "bypassPermissions");
-  assert.match(calls[0].prompt, /active provider is Anthropic \(Claude Agent SDK\)/);
-  assert.match(calls[0].prompt, /active model is claude-sonnet-5/);
-  assert.equal(result.threadId, "claude-session-9");
-  assert.equal(result.toolCalls[0].toolName, "Computer");
-  assert.equal(result.usage.inputTokens, 20);
+  const previousKey = process.env.ANTHROPIC_API_KEY;
+  const previousToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  process.env.ANTHROPIC_API_KEY = "sk-ant-api-should-not-leak";
+  process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-oat-subscription";
+  try {
+    const result = await runAnthropic(
+      { anthropicModel: "claude-sonnet-5", anthropicReasoning: "xhigh", anthropicSessionId: "resume-me", tempDirectory: tmpdir(), workingDirectory: "/workspace" },
+      [user("Take a screenshot")],
+      [{ name: "Computer", inputSchema: { type: "object" } }],
+      () => makeQuery(structured),
+    );
+    assert.equal(calls[0].options.resume, "resume-me");
+    assert.equal(calls[0].options.model, "claude-sonnet-5");
+    assert.equal(calls[0].options.effort, "xhigh");
+    assert.equal(calls[0].options.cwd, "/workspace");
+    assert.equal(calls[0].options.permissionMode, undefined);
+    assert.equal(calls[0].options.allowDangerouslySkipPermissions, undefined);
+    assert.deepEqual(calls[0].options.tools, []);
+    assert.equal(calls[0].options.maxTurns, 1);
+    assert.deepEqual(calls[0].options.settingSources, []);
+    assert.equal(calls[0].options.env.ANTHROPIC_API_KEY, undefined);
+    assert.equal(calls[0].options.env.CLAUDE_CODE_OAUTH_TOKEN, "sk-ant-oat-subscription");
+    assert.equal(JSON.stringify(calls[0].options).includes("sk-ant-api-should-not-leak"), false);
+    assert.match(calls[0].prompt, /active provider is Anthropic \(Claude Agent SDK\)/);
+    assert.match(calls[0].prompt, /active model is claude-sonnet-5/);
+    assert.match(calls[0].prompt, /Do not use Claude Code's own shell/);
+    assert.equal(result.threadId, "claude-session-9");
+    assert.equal(result.toolCalls[0].toolName, "Computer");
+    assert.equal(result.usage.inputTokens, 20);
+  } finally {
+    if (previousKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = previousKey;
+    if (previousToken === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    else process.env.CLAUDE_CODE_OAUTH_TOKEN = previousToken;
+  }
 
   const plain = await runAnthropic(
     { anthropicModel: "claude-haiku-4-5" },
@@ -266,5 +285,11 @@ test("Anthropic runs through the Claude Agent SDK, resumes a session, and return
       yield { type: "result", subtype: "error_max_turns", result: "" };
     }),
     /ended with error_max_turns/,
+  );
+  await assert.rejects(
+    runAnthropic({}, [user("hi")], [], () => function* query() {
+      yield { type: "result", subtype: "error_during_execution", errors: ["extra usage is out of credits"], result: "" };
+    }),
+    /out of credits/,
   );
 });
